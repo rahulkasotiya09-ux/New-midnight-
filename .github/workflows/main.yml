@@ -1,4 +1,9 @@
 
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
 name: Midnight Files Horror Bot
 
 on:
