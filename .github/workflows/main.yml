@@ -27,14 +27,27 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Check repository files
+      - name: Find Bot.py
         run: |
+          echo "Current directory:"
           pwd
+          echo "Repository files:"
           ls -la
-          find . -maxdepth 3 -type f
+          echo "Searching for Bot.py:"
+          find . -type f -iname 'Bot.py' -not -path './.git/*'
 
       - name: Run horror bot
-        run: python Bot.py
+        run: |
+          BOT_FILE=$(find . -type f -iname 'Bot.py' -not -path './.git/*' -print -quit)
+
+          if [ -z "$BOT_FILE" ]; then
+            echo "ERROR: Bot.py not found!"
+            exit 1
+          fi
+
+          echo "Running: $BOT_FILE"
+          python "$BOT_FILE"
+
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
