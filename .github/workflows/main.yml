@@ -1,15 +1,10 @@
 
-      - name: Install FFmpeg
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-
 name: Midnight Files Horror Bot
 
 on:
+  workflow_dispatch:
   schedule:
     - cron: '30 3,9,15 * * *'
-  workflow_dispatch:
 
 jobs:
   run-bot:
@@ -24,9 +19,13 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Install FFmpeg
         run: |
-          pip install -r requirements.txt
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
       - name: Run horror bot
         run: python Bot.py
