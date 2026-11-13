@@ -1,539 +1,142 @@
 
-import os
-import re
-import json
-import random
-import asyncio
-import subprocess
-from pathlib import Path
-
-import requests
-import edge_tts
-
+import os, json, re, random, subprocess, textwrap, datetime, pathlib, requests
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
-
+import edge_tts
 from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-
-# =====================================
-# CONFIGURATION
-# =====================================
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-YOUTUBE_CLIENT_ID = os.getenv("YOUTUBE_CLIENT_ID")
-YOUTUBE_CLIENT_SECRET = os.getenv("YOUTUBE_CLIENT_SECRET")
-YOUTUBE_REFRESH_TOKEN = os.getenv("YOUTUBE_REFRESH_TOKEN")
-
-MODEL = "gemini-3.8-flash"
-
-VOICE = "en-US-GuyNeural"
-
-WIDTH = 1080
-HEIGHT = 1920
-
-OUTPUT_DIR = Path("output")
-OUTPUT_DIR.mkdir(exist_ok=True)
-
-IMAGE_FILE = OUTPUT_DIR / "background.png"
-AUDIO_FILE = OUTPUT_DIR / "voice.mp3"
-VIDEO_FILE = OUTPUT_DIR / "midnight_files.mp4"
-
-YOUTUBE_SCOPES = [
-    "https://www.googleapis.com/auth/youtube.upload"
-]
-
-
-# =====================================
-# CHECK SETTINGS
-# =====================================
-
-def check_settings():
-    required = {
-        "GEMINI_API_KEY": GEMINI_API_KEY,
-        "YOUTUBE_CLIENT_ID": YOUTUBE_CLIENT_ID,
-        "YOUTUBE_CLIENT_SECRET": YOUTUBE_CLIENT_SECRET,
-        "YOUTUBE_REFRESH_TOKEN": YOUTUBE_REFRESH_TOKEN,
-    }
-
-    missing = [name for name, value in required.items() if not value]
-
-    if missing:
-        raise RuntimeError(
-            "Missing GitHub secrets: " + ", ".join(missing)
-        )
-
-
-# =====================================
-# GENERATE HORROR STORY
-# =====================================
+OUT = pathlib.Path("output")
+OUT.mkdir(exist_ok=True)
+W, H = 1080, 1920
+MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
 def ask_gemini():
+    key = os.environ["GEMINI_API_KEY"]
+    prompt = """Write ONE original, suspenseful English horror story for a YouTube Short.
+Return ONLY valid JSON with keys title, narration, description, tags.
+Narration must be 115-145 words, first-person or close third-person, strong hook in first sentence,
+clear ending/twist, advertiser-friendly (no graphic gore), no copyrighted characters or copied plots.
+Title <= 65 characters. Description 1-2 sentences. tags is an array of 5-8 short tags.
+Avoid generic clickbait and do not mention that this is AI."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={key}"
+    r = requests.post(url, json={"contents":[{"parts":[{"text":prompt}]}],
+        "generationConfig":{"temperature":0.95,"responseMimeType":"application/json"}}, timeout=90)
+    r.raise_for_status()
+    raw = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+    raw = re.sub(r"^```(?:json)?|```$", "", raw.strip(), flags=re.M).strip()
+    data = json.loads(raw)
+    data["narration"] = data["narration"].strip()
+    return data
 
-    print("Generating horror story with Gemini...")
-
-    url = (
-        f"https://generativelanguage.googleapis.com/"
-        f"v1beta/models/{MODEL}:generateContent"
-    )
-
-    prompt = """
-Write an original, extremely engaging horror story for a
-YouTube Shorts video.
-
-Requirements:
-- Around 100 to 130 words.
-- Start with a powerful scary hook.
-- Psychological horror and supernatural mystery.
-- Build suspense throughout.
-- Include an unexpected terrifying ending.
-- Make it sound natural when spoken aloud.
-- Do not include camera directions.
-- Do not include sound effect instructions.
-- Do not include hashtags.
-- Avoid excessive dialogue.
-
-Return exactly this format:
-
-TITLE: A short scary title
-
-STORY:
-The complete narration.
-"""
-
-    payload = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": prompt}
-                ]
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0.9,
-            "maxOutputTokens": 700
-        }
-    }
-
-    response = requests.post(
-        url,
-        params={"key": GEMINI_API_KEY},
-        json=payload,
-        timeout=90
-    )
-
-    if not response.ok:
-        raise RuntimeError(
-            f"Gemini API error {response.status_code}: "
-            f"{response.text[:1500]}"
-        )
-
-    data = response.json()
-
-    try:
-        result = data["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError, TypeError):
-        raise RuntimeError(
-            "Gemini returned an unexpected response: "
-            + json.dumps(data)[:1500]
-        )
-
-    title_match = re.search(
-        r"TITLE:\s*(.+)",
-        result,
-        re.IGNORECASE
-    )
-
-    story_match = re.search(
-        r"STORY:\s*(.*)",
-        result,
-        re.IGNORECASE | re.DOTALL
-    )
-
-    title = (
-        title_match.group(1).strip()
-        if title_match else "The Midnight Visitor"
-    )
-
-    story = (
-        story_match.group(1).strip()
-        if story_match else result.strip()
-    )
-
-    story = re.sub(r"\*\*", "", story)
-    story = re.sub(r"^#+\s*", "", story, flags=re.MULTILINE)
-
-    if len(story.split()) < 30:
-        raise RuntimeError("Gemini generated a story that is too short.")
-
-    print("Story generated:", title)
-
-    return title, story
-
-
-# =====================================
-# GENERATE AI VOICE
-# =====================================
-
-async def generate_voice(story):
-
-    print("Generating AI narration...")
-
-    communicate = edge_tts.Communicate(
-        story,
-        VOICE,
-        rate="-5%",
-        pitch="-5Hz"
-    )
-
-    await communicate.save(str(AUDIO_FILE))
-
-    if not AUDIO_FILE.exists():
-        raise RuntimeError("Voice generation failed.")
-
-    print("Voice generated successfully.")
-
-
-# =====================================
-# CREATE HORROR BACKGROUND
-# =====================================
-
-def get_font(size, bold=False):
-
-    font_paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-        if bold else
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"
-        if bold else
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"
+def font(size, bold=False):
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"
     ]
-
-    for path in font_paths:
-        if os.path.exists(path):
-            return ImageFont.truetype(path, size)
-
+    for p in candidates:
+        if os.path.exists(p): return ImageFont.truetype(p, size)
     return ImageFont.load_default()
 
-
-def wrap_text(draw, text, font, max_width):
-
-    words = text.split()
-    lines = []
-    current = ""
-
+def make_background(index, caption):
+    im = Image.new("RGB", (W,H), (5,6,12))
+    px = im.load()
+    for y in range(H):
+        shade = int(7 + 20*y/H)
+        for x in range(W):
+            glow = max(0, 1 - (((x-W*.72)**2 + (y-H*.28)**2)**.5)/650)
+            px[x,y] = (int(shade+18*glow), int(shade+2*glow), int(shade+8*glow))
+    d = ImageDraw.Draw(im, "RGBA")
+    # moon and fog
+    d.ellipse((730+index*13,180,930+index*13,380), fill=(180,185,195,28))
+    for j in range(7):
+        yy = 900 + j*105
+        d.ellipse((-250+j*60, yy, 1250-j*30, yy+250), fill=(120,125,145,10))
+    # silhouettes: trees and a house
+    base = 1190
+    d.polygon([(0,base+300),(180,base+70),(360,base+280),(520,base+30),(740,base+310),(900,base+90),(1080,base+270),(1080,1920),(0,1920)], fill=(3,4,8,255))
+    d.rectangle((380,base-30,760,base+310), fill=(7,7,12,255))
+    d.polygon([(340,base-30),(565,base-210),(800,base-30)], fill=(4,4,9,255))
+    d.rectangle((455,base+45,535,base+145), fill=(175,35,28,95))
+    d.rectangle((630,base+45,710,base+145), fill=(175,35,28,75))
+    # caption card
+    d.rounded_rectangle((70,1370,1010,1745), radius=34, fill=(0,0,0,185), outline=(170,25,35,150), width=3)
+    f = font(48, True)
+    words, lines, line = caption.split(), [], ""
     for word in words:
-        test = current + " " + word if current else word
+        test = (line+" "+word).strip()
+        if d.textbbox((0,0), test, font=f)[2] > 850:
+            lines.append(line); line=word
+        else: line=test
+    if line: lines.append(line)
+    lines = lines[:4]
+    line_h = 66
+    y = 1450 + (230-len(lines)*line_h)//2
+    for ln in lines:
+        box=d.textbbox((0,0),ln,font=f)
+        d.text(((W-(box[2]-box[0]))//2,y),ln,font=f,fill=(245,241,238,255),stroke_width=2,stroke_fill=(0,0,0,255))
+        y += line_h
+    d.text((70,70),"MIDNIGHT FILES  •  HORROR SHORTS",font=font(28,True),fill=(205,65,70,230))
+    return im
 
-        if draw.textbbox((0, 0), test, font=font)[2] <= max_width:
-            current = test
-        else:
-            if current:
-                lines.append(current)
-            current = word
+def split_captions(text, count=10):
+    words=text.split()
+    n=max(1, min(count, (len(words)+8)//9))
+    size=(len(words)+n-1)//n
+    return [" ".join(words[i:i+size]) for i in range(0,len(words),size)]
 
-    if current:
-        lines.append(current)
+async def create_voice(text, path):
+    communicate = edge_tts.Communicate(text, "en-US-GuyNeural", rate="-5%", pitch="-8Hz")
+    await communicate.save(str(path))
 
-    return lines
+def render_video(story, audio_path, out_path):
+    import asyncio
+    caps=split_captions(story["narration"], 11)
+    # Voice duration determines equal scene lengths; slight overlap is avoided.
+    probe=subprocess.check_output(["ffprobe","-v","error","-show_entries","format=duration","-of","default=noprint_wrappers=1:nokey=1",str(audio_path)], text=True)
+    duration=float(probe.strip())
+    scene_dir=OUT/"scenes"; scene_dir.mkdir(exist_ok=True)
+    concat=OUT/"frames.txt"
+    each=duration/len(caps)
+    with open(concat,"w") as f:
+        for i,cap in enumerate(caps):
+            p=scene_dir/f"scene_{i:02d}.png"
+            make_background(i,cap).save(p)
+            f.write(f"file '{p.resolve()}'\n")
+            f.write(f"duration {each:.3f}\n")
+        f.write(f"file '{(scene_dir/f'scene_{len(caps)-1:02d}.png').resolve()}'\n")
+    silent=OUT/"silent.mp4"
+    subprocess.run(["ffmpeg","-y","-f","concat","-safe","0","-i",str(concat),"-vf","scale=1080:1920,format=yuv420p","-r","30","-t",str(duration),"-c:v","libx264","-preset","ultrafast",str(silent)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    subprocess.run(["ffmpeg","-y","-i",str(silent),"-i",str(audio_path),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","aac","-b:a","128k","-shortest","-movflags","+faststart",str(out_path)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 
-
-def create_background(title):
-
-    print("Creating horror background...")
-
-    image = Image.new(
-        "RGB",
-        (WIDTH, HEIGHT),
-        (5, 4, 10)
-    )
-
-    pixels = image.load()
-
-    for y in range(HEIGHT):
-        for x in range(WIDTH):
-            distance = abs(x - WIDTH // 2) / WIDTH
-            darkness = int(25 * (1 - distance))
-
-            pixels[x, y] = (
-                8 + darkness,
-                3 + darkness // 5,
-                12 + darkness
-            )
-
-    draw = ImageDraw.Draw(image, "RGBA")
-
-    # Dark atmospheric shapes
-    for _ in range(45):
-        x = random.randint(0, WIDTH)
-        y = random.randint(0, HEIGHT)
-        radius = random.randint(15, 100)
-
-        draw.ellipse(
-            (x-radius, y-radius, x+radius, y+radius),
-            fill=(80, 0, 15, 12)
-        )
-
-    # Main title
-    title_font = get_font(88, bold=True)
-    small_font = get_font(38, bold=True)
-
-    lines = wrap_text(
-        draw,
-        title.upper(),
-        title_font,
-        900
-    )
-
-    y_position = 720
-
-    for line in lines:
-        bbox = draw.textbbox(
-            (0, 0),
-            line,
-            font=title_font
-        )
-
-        text_width = bbox[2] - bbox[0]
-        x_position = (WIDTH - text_width) // 2
-
-        draw.text(
-            (x_position + 4, y_position + 4),
-            line,
-            font=title_font,
-            fill=(0, 0, 0, 255)
-        )
-
-        draw.text(
-            (x_position, y_position),
-            line,
-            font=title_font,
-            fill=(220, 25, 45, 255)
-        )
-
-        y_position += 115
-
-    # Channel branding
-    brand = "MIDNIGHT FILES"
-
-    bbox = draw.textbbox(
-        (0, 0),
-        brand,
-        font=small_font
-    )
-
-    brand_width = bbox[2] - bbox[0]
-
-    draw.text(
-        ((WIDTH - brand_width) // 2, 570),
-        brand,
-        font=small_font,
-        fill=(220, 220, 220, 255)
-    )
-
-    draw.line(
-        (250, 530, 830, 530),
-        fill=(180, 20, 35, 180),
-        width=3
-    )
-
-    draw.text(
-        (WIDTH // 2, 1120),
-        "SOME STORIES NEVER END...",
-        anchor="mm",
-        font=get_font(28),
-        fill=(180, 180, 180, 220)
-    )
-
-    # Dark vignette
-    image = image.filter(
-        ImageFilter.GaussianBlur(radius=0.5)
-    )
-
-    image.save(IMAGE_FILE)
-
-    print("Background created.")
-
-
-# =====================================
-# CREATE SHORTS VIDEO
-# =====================================
-
-def create_video():
-
-    print("Rendering vertical video...")
-
-    command = [
-        "ffmpeg",
-        "-y",
-        "-loop", "1",
-        "-framerate", "30",
-        "-i", str(IMAGE_FILE),
-        "-i", str(AUDIO_FILE),
-        "-c:v", "libx264",
-        "-tune", "stillimage",
-        "-c:a", "aac",
-        "-b:a", "192k",
-        "-pix_fmt", "yuv420p",
-        "-shortest",
-        "-movflags", "+faststart",
-        "-vf", "scale=1080:1920",
-        str(VIDEO_FILE)
-    ]
-
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True
-    )
-
-    if result.returncode != 0:
-        raise RuntimeError(
-            "FFmpeg failed: " + result.stderr[-2000:]
-        )
-
-    if not VIDEO_FILE.exists():
-        raise RuntimeError("Video file was not created.")
-
-    print("Video rendered successfully.")
-
-
-# =====================================
-# YOUTUBE AUTHENTICATION
-# =====================================
-
-def youtube_authentication():
-
-    print("Connecting to YouTube...")
-
-    credentials = Credentials(
-        token=None,
-        refresh_token=YOUTUBE_REFRESH_TOKEN,
+def youtube_upload(video_path, story):
+    refresh=os.environ["YOUTUBE_REFRESH_TOKEN"]
+    creds=Credentials(
+        token=None, refresh_token=refresh,
         token_uri="https://oauth2.googleapis.com/token",
-        client_id=YOUTUBE_CLIENT_ID,
-        client_secret=YOUTUBE_CLIENT_SECRET,
-        scopes=YOUTUBE_SCOPES
-    )
-
-    youtube = build(
-        "youtube",
-        "v3",
-        credentials=credentials,
-        cache_discovery=False
-    )
-
-    return youtube
-
-
-# =====================================
-# UPLOAD VIDEO TO YOUTUBE
-# =====================================
-
-def upload_video(title, story):
-
-    print("Uploading video to YouTube...")
-
-    youtube = youtube_authentication()
-
-    description = f"""
-Welcome to Midnight Files.
-
-A terrifying short horror story for those who love
-mystery, supernatural encounters and psychological horror.
-
-Watch until the end.
-
-#shorts #horror #scarystories #horrorstories
-#midnightfiles #creepy
-"""
-
-    body = {
-        "snippet": {
-            "title": title[:95] + " #Shorts",
-            "description": description,
-            "tags": [
-                "horror",
-                "scary stories",
-                "horror shorts",
-                "creepy stories",
-                "midnight files",
-                "shorts"
-            ],
-            "categoryId": "24"
-        },
-        "status": {
-            "privacyStatus": "public",
-            "selfDeclaredMadeForKids": False
-        }
-    }
-
-    media = MediaFileUpload(
-        str(VIDEO_FILE),
-        mimetype="video/mp4",
-        resumable=True
-    )
-
-    request = youtube.videos().insert(
-        part="snippet,status",
-        body=body,
-        media_body=media
-    )
-
-    response = None
-
-    while response is None:
-        status, response = request.next_chunk()
-
-        if status:
-            print(
-                "Upload progress: "
-                + str(int(status.progress() * 100))
-                + "%"
-            )
-
-    video_id = response.get("id")
-
-    if not video_id:
-        raise RuntimeError(
-            "YouTube upload returned no video ID."
-        )
-
-    print("UPLOAD SUCCESSFUL!")
-    print(
-        "Video URL: "
-        f"https://www.youtube.com/watch?v={video_id}"
-    )
-
-
-# =====================================
-# MAIN BOT
-# =====================================
+        client_id=os.environ["YOUTUBE_CLIENT_ID"],
+        client_secret=os.environ["YOUTUBE_CLIENT_SECRET"],
+        scopes=["https://www.googleapis.com/auth/youtube.upload"])
+    creds.refresh(Request())
+    yt=build("youtube","v3",credentials=creds)
+    body={"snippet":{"title":story["title"][:100],"description":story["description"]+"\n\n#shorts #horror #scarystories",
+        "tags":story.get("tags",[])+["shorts","horror","scarystories"],"categoryId":"24","defaultLanguage":"en"},
+        "status":{"privacyStatus":"public","selfDeclaredMadeForKids":False}}
+    req=yt.videos().insert(part="snippet,status",body=body,
+        media_body=MediaFileUpload(str(video_path),mimetype="video/mp4",resumable=True))
+    response=req.execute()
+    print("Published:", "https://youtube.com/shorts/"+response["id"])
 
 def main():
+    story=ask_gemini()
+    stamp=datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
+    audio=OUT/f"voice_{stamp}.mp3"
+    video=OUT/f"horror_{stamp}.mp4"
+    import asyncio
+    asyncio.run(create_voice(story["narration"],audio))
+    render_video(story,audio,video)
+    youtube_upload(video,story)
 
-    print("================================")
-    print(" MIDNIGHT FILES HORROR BOT")
-    print("================================")
-
-    check_settings()
-
-    title, story = ask_gemini()
-
-    print("\nGenerated story:")
-    print(story)
-
-    asyncio.run(generate_voice(story))
-
-    create_background(title)
-
-    create_video()
-
-    upload_video(title, story)
-
-    print("\nBOT COMPLETED SUCCESSFULLY!")
-
-
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
