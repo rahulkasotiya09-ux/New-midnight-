@@ -1,4 +1,25 @@
 
+name: Midnight Files OAuth Diagnostic
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-youtube-oauth:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
       - name: Test YouTube OAuth
         run: |
           python - <<'PY'
@@ -20,10 +41,20 @@
 
           print("HTTP status:", response.status_code)
 
-          result = response.json()
+          try:
+              result = response.json()
+          except ValueError:
+              print("Google returned a non-JSON response.")
+              raise SystemExit(1)
+
           print("Google error:", result.get("error", "None"))
           print("Error description:", result.get("error_description", "None"))
           print("Access token received:", bool(result.get("access_token")))
+
+          if response.status_code != 200:
+              raise SystemExit(1)
+
+          print("SUCCESS: GitHub OAuth refresh test passed.")
           PY
         env:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
