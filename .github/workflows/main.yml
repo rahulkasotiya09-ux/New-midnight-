@@ -1,55 +1,31 @@
 
-
-name: Midnight Files Horror Bot
-
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: '30 3,9,15 * * *'
-
-jobs:
-  run-bot:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install FFmpeg
+      - name: Test YouTube OAuth
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          python - <<'PY'
+          import os
+          import requests
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+          data = {
+              "client_id": os.environ["YOUTUBE_CLIENT_ID"].strip(),
+              "client_secret": os.environ["YOUTUBE_CLIENT_SECRET"].strip(),
+              "refresh_token": os.environ["YOUTUBE_REFRESH_TOKEN"].strip(),
+              "grant_type": "refresh_token"
+          }
 
-      - name: Find Bot.py
-        run: |
-          echo "Current directory:"
-          pwd
-          echo "Repository files:"
-          ls -la
-          echo "Searching for Bot.py:"
-          find . -type f -iname 'Bot.py' -not -path './.git/*'
+          response = requests.post(
+              "https://oauth2.googleapis.com/token",
+              data=data,
+              timeout=30
+          )
 
-      - name: Run horror bot
-        run: |
-          BOT_FILE=$(find . -type f -iname 'Bot.py' -not -path './.git/*' -print -quit)
+          print("HTTP status:", response.status_code)
 
-          if [ -z "$BOT_FILE" ]; then
-            echo "ERROR: Bot.py not found!"
-            exit 1
-          fi
-
-          echo "Running: $BOT_FILE"
-          python "$BOT_FILE"
+          result = response.json()
+          print("Google error:", result.get("error", "None"))
+          print("Error description:", result.get("error_description", "None"))
+          print("Access token received:", bool(result.get("access_token")))
+          PY
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
