@@ -342,12 +342,27 @@ def youtube_upload(video_path, story):
 
     print("Starting YouTube OAuth authentication...")
 
-    refresh = os.environ.get("YOUTUBE_REFRESH_TOKEN")
-    client_id = os.environ.get("YOUTUBE_CLIENT_ID")
-    client_secret = os.environ.get("YOUTUBE_CLIENT_SECRET")
+    refresh = os.environ.get(
+        "YOUTUBE_REFRESH_TOKEN", ""
+    ).strip()
+
+    client_id = os.environ.get(
+        "YOUTUBE_CLIENT_ID", ""
+    ).strip()
+
+    client_secret = os.environ.get(
+        "YOUTUBE_CLIENT_SECRET", ""
+    ).strip()
+
+    print("Refresh token present:", bool(refresh))
+    print("Refresh token length:", len(refresh))
+    print("Client ID present:", bool(client_id))
+    print("Client secret present:", bool(client_secret))
 
     if not all([refresh, client_id, client_secret]):
-        raise RuntimeError("Missing YouTube OAuth GitHub Secrets.")
+        raise RuntimeError(
+            "Missing YouTube OAuth GitHub Secrets."
+        )
 
     creds = Credentials(
         token=None,
@@ -359,13 +374,22 @@ def youtube_upload(video_path, story):
     )
 
     try:
+
         creds.refresh(Request())
-        print("SUCCESS: Google OAuth authentication completed.")
+
+        print(
+            "SUCCESS: Google OAuth authentication completed."
+        )
 
     except Exception as e:
+
         print("OAUTH AUTHENTICATION FAILED.")
         print("Error type:", type(e).__name__)
-        print("Error details:", str(e))
+
+        # Do not print credentials or token values.
+        if hasattr(e, "args"):
+            print("OAuth error:", str(e).split("', {")[0])
+
         raise
 
     try:
@@ -415,6 +439,7 @@ def youtube_upload(video_path, story):
         )
 
     except HttpError as e:
+
         print("YOUTUBE UPLOAD FAILED:", str(e))
         raise
 
