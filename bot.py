@@ -5,6 +5,7 @@ import re
 import subprocess
 import datetime
 import pathlib
+import asyncio
 import requests
 
 from PIL import Image, ImageDraw, ImageFont
@@ -249,15 +250,45 @@ def split_captions(text, count=10):
 
 
 async def create_voice(text, path):
+    """Create narration with retries for Edge TTS 429 errors."""
 
-    communicate = edge_tts.Communicate(
-        text,
-        "en-US-GuyNeural",
-        rate="-5%",
-        pitch="-8Hz"
-    )
+    delays = [10, 20, 40, 60, 60]
+    last_error = None
 
-    await communicate.save(str(path))
+    for attempt, delay in enumerate(delays, start=1):
+        try:
+            communicate = edge_tts.Communicate(
+                text,
+                "en-US-GuyNeural",
+                rate="-5%",
+                pitch="-8Hz"
+            )
+
+            await communicate.save(str(path))
+            print("Voice narration created successfully.")
+            return
+
+        except Exception as exc:
+            last_error = exc
+            status = getattr(exc, "status", None)
+
+            if status != 429:
+                raise
+
+            if attempt == len(delays):
+                break
+
+            print(
+                f"Edge TTS rate limit (429). "
+                f"Retrying in {delay} seconds..."
+            )
+
+            await asyncio.sleep(delay)
+
+    raise RuntimeError(
+        "Edge TTS is still rate-limited after multiple attempts. "
+        "Please try again later."
+    ) from last_error
 
 
 def render_video(story, audio_path, out_path):
@@ -386,7 +417,6 @@ def youtube_upload(video_path, story):
         print("OAUTH AUTHENTICATION FAILED.")
         print("Error type:", type(e).__name__)
 
-        # Do not print credentials or token values.
         if hasattr(e, "args"):
             print("OAuth error:", str(e).split("', {")[0])
 
@@ -456,8 +486,6 @@ def main():
 
     audio = OUT / f"voice_{stamp}.mp3"
     video = OUT / f"horror_{stamp}.mp4"
-
-    import asyncio
 
     print("Creating narration...")
 
