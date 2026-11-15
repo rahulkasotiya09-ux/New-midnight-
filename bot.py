@@ -52,8 +52,7 @@ def run(command):
 
     if result.returncode != 0:
         raise RuntimeError(
-            "Command failed:\n"
-            + result.stderr[-4000:]
+            "Command failed:\n" + result.stderr[-4000:]
         )
 
     return result.stdout.strip()
@@ -312,9 +311,7 @@ def get_scene_video(scene, index):
 
     query = scene["visual_query"]
 
-    print(
-        f"Searching scene {index + 1}: {query}"
-    )
+    print(f"Searching scene {index + 1}: {query}")
 
     result = find_video(query)
 
@@ -326,10 +323,7 @@ def get_scene_video(scene, index):
 
     destination = MEDIA / f"scene_{index + 1}.mp4"
 
-    download_video(
-        result["url"],
-        destination
-    )
+    download_video(result["url"], destination)
 
     scene["credit"] = (
         f"Scene {index + 1}: {result['creator']} "
@@ -415,33 +409,71 @@ def srt_timestamp(seconds):
     )
 
 
-def create_subtitles(boundaries, audio_duration, path):
-
-    if not boundaries:
-        raise RuntimeError(
-            "TTS did not provide word timing information; "
-            "refusing to create falsely synchronized captions."
-        )
+def create_subtitles(boundaries, audio_duration, path, narration=""):
 
     groups = []
 
-    for index in range(0, len(boundaries), 4):
+    # Use actual word timings when Edge TTS provides them.
+    if boundaries:
 
-        group = boundaries[index:index + 4]
+        for index in range(0, len(boundaries), 4):
 
-        text = " ".join(
-            item["text"] for item in group
+            group = boundaries[index:index + 4]
+
+            text = " ".join(
+                item["text"] for item in group
+            )
+
+            start = group[0]["start"]
+            end = min(group[-1]["end"], audio_duration)
+
+            if end <= start:
+                end = min(start + 0.25, audio_duration)
+
+            groups.append((start, end, text))
+
+    # Fallback: estimate subtitle timings from narration.
+    else:
+
+        print(
+            "Word timing unavailable. "
+            "Using automatic subtitle timing."
         )
 
-        start = group[0]["start"]
-        end = group[-1]["end"]
+        words = clean(narration).split()
 
-        end = min(end, audio_duration)
+        if not words:
+            raise RuntimeError(
+                "No narration available for subtitles."
+            )
 
-        if end <= start:
-            end = min(start + 0.25, audio_duration)
+        chunks = [
+            words[i:i + 4]
+            for i in range(0, len(words), 4)
+        ]
 
-        groups.append((start, end, text))
+        weights = [
+            sum(len(word) + 1 for word in chunk)
+            for chunk in chunks
+        ]
+
+        total_weight = sum(weights)
+        current_time = 0.0
+
+        for chunk, weight in zip(chunks, weights):
+
+            duration = audio_duration * weight / total_weight
+
+            start = current_time
+            end = min(current_time + duration, audio_duration)
+
+            groups.append((
+                start,
+                end,
+                " ".join(chunk)
+            ))
+
+            current_time = end
 
     lines = []
 
@@ -530,9 +562,7 @@ def build_video(story):
 
     for index, scene in enumerate(story["scenes"]):
 
-        print(
-            f"\nProcessing scene {index + 1}/6"
-        )
+        print(f"\nProcessing scene {index + 1}/6")
 
         video_path = get_scene_video(scene, index)
 
@@ -552,7 +582,8 @@ def build_video(story):
         create_subtitles(
             boundaries,
             audio_duration,
-            subtitle_path
+            subtitle_path,
+            scene["narration"]
         )
 
         render_scene(
@@ -567,6 +598,7 @@ def build_video(story):
     list_path = MEDIA / "scenes.txt"
 
     with open(list_path, "w", encoding="utf-8") as file:
+
         for scene_path in rendered_scenes:
             file.write(
                 f"file '{scene_path.resolve()}'\n"
