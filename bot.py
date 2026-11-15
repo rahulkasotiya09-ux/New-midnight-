@@ -27,7 +27,7 @@ MEDIA = OUTPUT / "media"
 OUTPUT.mkdir(exist_ok=True)
 MEDIA.mkdir(exist_ok=True)
 
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
 VOICE = "en-US-RogerNeural"
 VOICE_RATE = "-10%"
