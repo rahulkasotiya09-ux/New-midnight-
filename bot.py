@@ -3,6 +3,7 @@ import os
 import re
 import json
 import time
+import base64
 import asyncio
 import subprocess
 from pathlib import Path
@@ -17,7 +18,7 @@ from googleapiclient.http import MediaFileUpload
 
 
 # ==========================================
-# MIDNIGHT FILES - CINEMATIC HORROR SETTINGS
+# MIDNIGHT FILES - FREE AI IMAGE ENGINE
 # ==========================================
 
 BASE = Path(__file__).resolve().parent
@@ -29,7 +30,8 @@ MEDIA.mkdir(exist_ok=True)
 
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
-# Deep cinematic male voice
+CLOUDFLARE_MODEL = "@cf/black-forest-labs/flux-1-schnell"
+
 VOICE = os.getenv("TTS_VOICE", "en-US-ChristopherNeural")
 VOICE_RATE = "-8%"
 VOICE_PITCH = "-25Hz"
@@ -40,12 +42,16 @@ FPS = 30
 
 TRANSITION_DURATION = 0.35
 
+# Same seed helps keep a consistent visual style.
+IMAGE_SEED = 82417
+
 
 # ==========================================
 # GENERAL HELPERS
 # ==========================================
 
 def run(command):
+
     result = subprocess.run(
         command,
         stdout=subprocess.PIPE,
@@ -62,6 +68,7 @@ def run(command):
 
 
 def duration_of(path):
+
     result = run([
         "ffprobe",
         "-v", "error",
@@ -78,26 +85,34 @@ def clean(value):
 
 
 def request_with_retry(method, url, **kwargs):
+
     last_error = None
 
     for attempt in range(5):
+
         try:
+
             response = requests.request(
                 method,
                 url,
-                timeout=(20, 180),
+                timeout=(30, 240),
                 **kwargs
             )
 
-            if response.status_code in (429, 500, 502, 503, 504):
+            if response.status_code in (
+                429, 500, 502, 503, 504
+            ):
+
                 last_error = (
                     f"HTTP {response.status_code}: "
                     f"{response.text[:1500]}"
                 )
+
                 time.sleep(10 * (attempt + 1))
                 continue
 
             if not response.ok:
+
                 raise RuntimeError(
                     f"API HTTP {response.status_code}: "
                     f"{response.text[:2000]}"
@@ -106,6 +121,7 @@ def request_with_retry(method, url, **kwargs):
             return response
 
         except requests.RequestException as error:
+
             last_error = str(error)
 
             if attempt == 4:
@@ -113,11 +129,13 @@ def request_with_retry(method, url, **kwargs):
 
             time.sleep(10 * (attempt + 1))
 
-    raise RuntimeError(f"Network request failed: {last_error}")
+    raise RuntimeError(
+        f"Request failed: {last_error}"
+    )
 
 
 # ==========================================
-# GEMINI - CINEMATIC STORY GENERATION
+# GEMINI - HORROR SCREENPLAY
 # ==========================================
 
 def generate_story():
@@ -125,77 +143,62 @@ def generate_story():
     api_key = os.environ["GEMINI_API_KEY"]
 
     prompt = """
-Create one original cinematic horror short film story.
+Create one original cinematic horror short film.
 
 Return ONLY valid JSON.
 
-STORY REQUIREMENTS:
+STORY:
 - English narration.
 - 115 to 145 spoken words total.
-- Six consecutive scenes.
-- Powerful first-sentence hook.
+- Exactly six consecutive scenes.
+- Powerful opening hook.
 - Gradually increasing suspense.
 - Strong unexpected ending.
-- Advertiser-friendly horror.
-- No gore or graphic violence.
+- Advertiser-friendly.
+- No graphic violence or gore.
 
-VISUAL REQUIREMENTS:
+CONTINUITY:
+The six scenes must feel like one continuous movie.
 
-This must feel like a continuous horror MOVIE,
-not six unrelated stock-video clips.
+Create one memorable main character.
 
-All scenes must belong to the SAME story.
+Maintain the same:
+- Face and age.
+- Hair and clothing.
+- Location.
+- Time of night.
+- Lighting and color palette.
 
-Maintain continuity:
-- Same main character.
-- Same clothing and appearance.
-- Same house or location when appropriate.
-- Same time of night.
-- Consistent atmosphere and lighting.
-- Events must happen in chronological order.
+Every scene must happen in chronological order.
 
-Every scene must visually show what the narration describes.
+VISUALS:
+Describe exact cinematic shots.
+Use realistic movie photography.
+Use close-ups, wide shots, POV and tracking-style compositions.
+Show the actual events being narrated.
+Avoid generic horror imagery.
 
-Use realistic cinematic film shots:
-- Establishing shots.
-- Close-ups.
-- Over-the-shoulder shots.
-- Tracking shots.
-- POV shots.
-- Suspenseful camera angles.
-
-Avoid generic horror footage.
-
-Avoid abstract searches such as:
-"horror", "scary", "creepy".
-
-Use specific searchable descriptions.
-
-Return this exact structure:
+Return this structure:
 
 {
   "title": "Story title",
   "description": "YouTube description",
   "tags": ["horror", "scary story", "shorts"],
+  "character_description": "Detailed appearance of the main character",
+  "visual_style": "Consistent cinematic visual style",
   "scenes": [
     {
-      "narration": "First part of story.",
-      "visual_query": "specific realistic cinematic video search",
-      "visual_description": "Detailed description of the exact shot",
-      "mood": "dark and suspenseful"
+      "narration": "Scene narration",
+      "visual_description": "Detailed description of the exact image",
+      "mood": "Suspenseful"
     }
   ]
 }
 
-EXACTLY SIX SCENES.
-
-Each narration must continue naturally from the previous scene.
-Do not repeat or skip story events.
-
-Keep the JSON compact.
-Do not use Markdown.
-Do not add explanations.
-Ensure the JSON is complete and valid.
+Exactly six scenes.
+Narration must total 115-145 words.
+Keep the JSON complete and valid.
+Do not add Markdown or explanations.
 """
 
     url = (
@@ -203,7 +206,7 @@ Ensure the JSON is complete and valid.
         f"models/{GEMINI_MODEL}:generateContent"
     )
 
-    print("Using Gemini:", GEMINI_MODEL)
+    print("Generating screenplay with:", GEMINI_MODEL)
 
     response = request_with_retry(
         "POST",
@@ -222,20 +225,19 @@ Ensure the JSON is complete and valid.
     )
 
     data = response.json()
-
     candidates = data.get("candidates", [])
 
     if not candidates:
         raise RuntimeError(
-            "Gemini returned no candidates: " + str(data)[:2000]
+            "Gemini returned no candidates: "
+            + str(data)[:2000]
         )
 
     candidate = candidates[0]
 
     if candidate.get("finishReason") == "MAX_TOKENS":
         raise RuntimeError(
-            "Gemini reached its output token limit. "
-            "The story was incomplete."
+            "Gemini output was cut off by the token limit."
         )
 
     parts = candidate.get("content", {}).get("parts", [])
@@ -246,42 +248,57 @@ Ensure the JSON is complete and valid.
         if part.get("text")
     ).strip()
 
-    if not raw:
-        raise RuntimeError("Gemini returned an empty story.")
-
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
 
     try:
         story = json.loads(raw)
     except json.JSONDecodeError as error:
-        print("Gemini response:", raw[:3000])
+        print(raw[:3000])
         raise RuntimeError(
-            f"Gemini returned invalid JSON: {error}"
-        ) from error
+            f"Invalid Gemini JSON: {error}"
+        )
 
     scenes = story.get("scenes", [])
 
     if len(scenes) != 6:
         raise RuntimeError(
-            f"Expected 6 scenes, received {len(scenes)}."
+            f"Expected six scenes, got {len(scenes)}."
         )
 
     for scene in scenes:
-        scene["narration"] = clean(scene.get("narration"))
-        scene["visual_query"] = clean(scene.get("visual_query"))
+
+        scene["narration"] = clean(
+            scene.get("narration")
+        )
+
         scene["visual_description"] = clean(
             scene.get("visual_description")
         )
-        scene["mood"] = clean(scene.get("mood"))
 
-        if not scene["narration"] or not scene["visual_query"]:
+        if not scene["narration"]:
+            raise RuntimeError("A scene has no narration.")
+
+        if not scene["visual_description"]:
             raise RuntimeError(
-                "A scene is missing narration or visual_query."
+                "A scene has no visual description."
             )
 
-    story["title"] = clean(story.get("title")) or "Midnight Files"
-    story["description"] = clean(story.get("description"))
+    story["title"] = clean(
+        story.get("title")
+    ) or "Midnight Files"
+
+    story["description"] = clean(
+        story.get("description")
+    )
+
+    story["character_description"] = clean(
+        story.get("character_description")
+    )
+
+    story["visual_style"] = clean(
+        story.get("visual_style")
+    )
 
     story["tags"] = story.get(
         "tags",
@@ -296,144 +313,127 @@ Ensure the JSON is complete and valid.
 
     if not 100 <= word_count <= 160:
         raise RuntimeError(
-            f"Story contains {word_count} words."
+            f"Story has {word_count} words."
         )
 
-    print("Story generated successfully.")
-    print("Story title:", story["title"])
-    print("Word count:", word_count)
+    print("Story:", story["title"])
+    print("Narration words:", word_count)
 
     return story
 
 
 # ==========================================
-# PIXABAY - STORY MATCHED VIDEO FOOTAGE
+# CLOUDFLARE FLUX - GENERATE SCENE IMAGES
 # ==========================================
 
-def find_video(query):
+def generate_scene_image(story, scene, index):
 
-    api_key = os.environ["PIXABAY_API_KEY"]
+    account_id = os.environ["CLOUDFLARE_ACCOUNT_ID"]
+    api_token = os.environ["CLOUDFLARE_API_TOKEN"]
+
+    character = story.get("character_description", "")
+    visual_style = story.get("visual_style", "")
+
+    prompt = f"""
+Create a photorealistic cinematic horror movie still.
+
+MAIN CHARACTER - MUST REMAIN CONSISTENT:
+{character}
+
+VISUAL STYLE:
+{visual_style}
+
+EXACT SCENE:
+{scene["visual_description"]}
+
+STORY MOMENT:
+{scene["narration"]}
+
+IMPORTANT IMAGE RULES:
+- Realistic live-action movie photography.
+- Vertical portrait composition suitable for 9:16 cropping.
+- Keep the main subject near the center.
+- Detailed realistic environment.
+- Atmospheric cinematic lighting.
+- Deep shadows and controlled highlights.
+- Natural human anatomy and realistic faces.
+- Consistent character appearance and clothing.
+- No text, no captions, no logos, no watermark.
+- No collage or split-screen.
+- No cartoon or illustration.
+- No graphic gore.
+- One single coherent movie frame.
+"""
+
+    prompt = clean(prompt)[:2000]
+
+    url = (
+        "https://api.cloudflare.com/client/v4/accounts/"
+        f"{account_id}/ai/run/{CLOUDFLARE_MODEL}"
+    )
+
+    print(
+        f"\nGenerating original AI image "
+        f"{index + 1}/6..."
+    )
 
     response = request_with_retry(
-        "GET",
-        "https://pixabay.com/api/videos/",
-        params={
-            "key": api_key,
-            "q": query[:100],
-            "per_page": 20,
-            "safesearch": "true",
-            "order": "popular"
+        "POST",
+        url,
+        headers={
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "prompt": prompt,
+            "steps": 4,
+            "seed": IMAGE_SEED
         }
     )
 
-    hits = response.json().get("hits", [])
+    data = response.json()
 
-    if not hits:
-        return None
-
-    # Prefer landscape or portrait clips with adequate resolution.
-    candidates = []
-
-    query_words = set(
-        re.findall(r"[a-z]+", query.lower())
-    )
-
-    for hit in hits:
-        videos = hit.get("videos", {})
-        video = videos.get("medium", {})
-
-        if not video.get("url"):
-            continue
-
-        tags = set(
-            re.findall(
-                r"[a-z]+",
-                str(hit.get("tags", "")).lower()
-            )
-        )
-
-        relevance = len(query_words.intersection(tags))
-
-        width = video.get("width", 0)
-        height = video.get("height", 0)
-
-        quality = min(width, height) / 1000
-
-        candidates.append((
-            relevance + quality,
-            hit,
-            video
-        ))
-
-    if not candidates:
-        return None
-
-    candidates.sort(
-        key=lambda item: item[0],
-        reverse=True
-    )
-
-    _, hit, video = candidates[0]
-
-    return {
-        "url": video["url"],
-        "page": hit.get("pageURL", ""),
-        "creator": hit.get("user", "Pixabay contributor")
-    }
-
-
-def download_video(url, destination):
-
-    response = request_with_retry(
-        "GET",
-        url,
-        stream=True
-    )
-
-    with open(destination, "wb") as file:
-        for chunk in response.iter_content(1024 * 1024):
-            if chunk:
-                file.write(chunk)
-
-    if (
-        not destination.exists()
-        or destination.stat().st_size < 10000
-    ):
-        raise RuntimeError("Downloaded video is empty.")
-
-    return destination
-
-
-def get_scene_video(scene, index):
-
-    query = scene["visual_query"]
-
-    print(f"Searching cinematic scene {index + 1}: {query}")
-
-    result = find_video(query)
-
-    if not result:
+    if not data.get("success", False):
         raise RuntimeError(
-            f"No matching footage found for scene {index + 1}: "
-            f"{query}"
+            "Cloudflare image generation failed: "
+            + str(data.get("errors", data))[:2000]
         )
 
-    destination = MEDIA / f"scene_{index + 1}.mp4"
-
-    download_video(result["url"], destination)
-
-    scene["credit"] = (
-        f"Scene {index + 1}: {result['creator']} "
-        f"- {result['page']}"
+    image_base64 = (
+        data.get("result", {}).get("image")
     )
 
-    print("Downloaded:", query)
+    if not image_base64:
+        raise RuntimeError(
+            "Cloudflare returned no image data: "
+            + str(data)[:1000]
+        )
 
-    return destination
+    try:
+        image_bytes = base64.b64decode(image_base64)
+    except Exception as error:
+        raise RuntimeError(
+            f"Could not decode generated image: {error}"
+        )
+
+    image_path = MEDIA / f"scene_{index + 1}.jpg"
+
+    image_path.write_bytes(image_bytes)
+
+    if image_path.stat().st_size < 10000:
+        raise RuntimeError(
+            f"Generated image {index + 1} is too small."
+        )
+
+    print(
+        f"AI scene image saved: {image_path.name}"
+    )
+
+    return image_path
 
 
 # ==========================================
-# CINEMATIC DEEP MALE NARRATION
+# DEEP MALE VOICE
 # ==========================================
 
 async def generate_voice(text, audio_path):
@@ -443,6 +443,7 @@ async def generate_voice(text, audio_path):
     for attempt in range(5):
 
         try:
+
             communicator = edge_tts.Communicate(
                 text=text,
                 voice=VOICE,
@@ -456,31 +457,41 @@ async def generate_voice(text, audio_path):
             async for event in communicator.stream():
 
                 if event["type"] == "audio":
-                    audio_data.extend(event["data"])
+
+                    audio_data.extend(
+                        event["data"]
+                    )
 
                 elif event["type"] == "WordBoundary":
+
                     boundaries.append({
                         "text": event["text"],
                         "start": event["offset"] / 10000000,
                         "end": (
-                            event["offset"] + event["duration"]
+                            event["offset"]
+                            + event["duration"]
                         ) / 10000000
                     })
 
             if len(audio_data) < 1000:
-                raise RuntimeError("Voice audio is empty.")
+                raise RuntimeError(
+                    "Generated voice audio is empty."
+                )
 
             audio_path.write_bytes(audio_data)
 
             return boundaries
 
         except Exception as error:
+
             last_error = error
 
             if attempt == 4:
                 break
 
-            await asyncio.sleep(10 * (attempt + 1))
+            await asyncio.sleep(
+                10 * (attempt + 1)
+            )
 
     raise RuntimeError(
         f"Voice generation failed: {last_error}"
@@ -488,16 +499,27 @@ async def generate_voice(text, audio_path):
 
 
 # ==========================================
-# SUBTITLES - LOWER SCREEN POSITION
+# SUBTITLES
 # ==========================================
 
 def srt_timestamp(seconds):
 
-    milliseconds = max(0, int(seconds * 1000))
+    milliseconds = max(
+        0,
+        int(seconds * 1000)
+    )
 
-    hours, milliseconds = divmod(milliseconds, 3600000)
-    minutes, milliseconds = divmod(milliseconds, 60000)
-    seconds, milliseconds = divmod(milliseconds, 1000)
+    hours, milliseconds = divmod(
+        milliseconds, 3600000
+    )
+
+    minutes, milliseconds = divmod(
+        milliseconds, 60000
+    )
+
+    seconds, milliseconds = divmod(
+        milliseconds, 1000
+    )
 
     return (
         f"{hours:02}:{minutes:02}:"
@@ -525,21 +547,23 @@ def create_subtitles(
             )
 
             start = group[0]["start"]
-            end = min(group[-1]["end"], audio_duration)
+
+            end = min(
+                group[-1]["end"],
+                audio_duration
+            )
 
             if end <= start:
-                end = min(start + 0.25, audio_duration)
+                end = min(
+                    start + 0.25,
+                    audio_duration
+                )
 
             groups.append((start, end, text))
 
     else:
 
-        print("Using estimated subtitle timings.")
-
         words = clean(narration).split()
-
-        if not words:
-            raise RuntimeError("No narration for subtitles.")
 
         chunks = [
             words[i:i + 4]
@@ -556,10 +580,15 @@ def create_subtitles(
 
         for chunk, weight in zip(chunks, weights):
 
-            duration = audio_duration * weight / total_weight
+            duration = (
+                audio_duration * weight / total_weight
+            )
 
             start = current_time
-            end = min(current_time + duration, audio_duration)
+            end = min(
+                current_time + duration,
+                audio_duration
+            )
 
             groups.append((
                 start,
@@ -571,11 +600,14 @@ def create_subtitles(
 
     lines = []
 
-    for index, (start, end, text) in enumerate(groups, start=1):
+    for index, (start, end, text) in enumerate(
+        groups, start=1
+    ):
 
         lines.extend([
             str(index),
-            f"{srt_timestamp(start)} --> {srt_timestamp(end)}",
+            f"{srt_timestamp(start)} --> "
+            f"{srt_timestamp(end)}",
             text,
             ""
         ])
@@ -587,11 +619,11 @@ def create_subtitles(
 
 
 # ==========================================
-# CINEMATIC SCENE RENDERING
+# ANIMATE STILL IMAGE INTO CINEMATIC SCENE
 # ==========================================
 
 def render_scene(
-    video_path,
+    image_path,
     audio_path,
     subtitle_path,
     output_path
@@ -599,12 +631,22 @@ def render_scene(
 
     audio_duration = duration_of(audio_path)
 
-    subtitle_file = str(subtitle_path.resolve())
-    subtitle_file = subtitle_file.replace("\\", "/")
-    subtitle_file = subtitle_file.replace(":", r"\:")
-    subtitle_file = subtitle_file.replace("'", r"\'")
+    subtitle_file = str(
+        subtitle_path.resolve()
+    )
 
-    # Lower subtitles, above the bottom interface area.
+    subtitle_file = subtitle_file.replace(
+        "\\", "/"
+    )
+
+    subtitle_file = subtitle_file.replace(
+        ":", r"\:"
+    )
+
+    subtitle_file = subtitle_file.replace(
+        "'", r"\'"
+    )
+
     subtitle_filter = (
         f"subtitles='{subtitle_file}':"
         "force_style='"
@@ -614,41 +656,58 @@ def render_scene(
         "PrimaryColour=&H00FFFFFF,"
         "OutlineColour=&H00000000,"
         "BackColour=&H80000000,"
-        "BorderStyle=3,"
-        "Outline=2,"
+        "BorderStyle=1,"
+        "Outline=3,"
         "Shadow=1,"
         "Alignment=2,"
-        "MarginV=190,"
+        "MarginV=180,"
         "MarginL=70,"
         "MarginR=70"
         "'"
     )
 
-    # Portrait crop with subtle cinematic camera movement.
+    # Blurred background fills the portrait frame.
+    # Original image stays visible in the center.
+    # Slow zoom creates a cinematic camera movement.
+
     video_filter = (
-        "scale=1188:2112:force_original_aspect_ratio=increase,"
-        "crop=1080:1920:"
-        "x='(in_w-out_w)/2+12*sin(t*0.35)':"
-        "y='(in_h-out_h)/2',"
-        "setsar=1,"
+        "[0:v]split=2[bgsrc][fgsrc];"
+        "[bgsrc]"
+        "scale=1080:1920:force_original_aspect_ratio=increase,"
+        "crop=1080:1920,"
+        "boxblur=28:10,"
+        "eq=brightness=-0.22:saturation=0.65"
+        "[bg];"
+        "[fgsrc]"
+        "scale=1080:1080:force_original_aspect_ratio=decrease"
+        "[fg];"
+        "[bg][fg]"
+        "overlay=(W-w)/2:(H-h)/2,"
+        "zoompan="
+        "z='min(zoom+0.00045,1.08)':"
+        "x='iw/2-(iw/zoom/2)':"
+        "y='ih/2-(ih/zoom/2)':"
+        "d=1:"
+        "s=1080x1920:"
         "fps=30,"
-        "eq=contrast=1.16:saturation=0.78:brightness=-0.045,"
+        "eq=contrast=1.16:saturation=0.78:brightness=-0.04,"
         "colorbalance=rs=-0.025:gs=-0.01:bs=0.025,"
         "vignette=PI/5,"
-        "unsharp=5:5:0.45:5:5:0.0,"
         + subtitle_filter
+        + "[v]"
     )
 
     run([
         "ffmpeg",
         "-y",
-        "-stream_loop", "-1",
-        "-i", str(video_path),
+        "-loop", "1",
+        "-framerate", "30",
+        "-i", str(image_path),
         "-i", str(audio_path),
-        "-t", f"{audio_duration:.3f}",
-        "-vf", video_filter,
-        "-map", "0:v:0",
+        "-filter_complex", video_filter,
+        "-map", "[v]",
         "-map", "1:a:0",
+        "-t", f"{audio_duration:.3f}",
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-crf", "21",
@@ -663,7 +722,7 @@ def render_scene(
 
 
 # ==========================================
-# BUILD SIX-SCENE HORROR MOVIE
+# BUILD SIX-SCENE HORROR SHORT
 # ==========================================
 
 def build_video(story):
@@ -672,13 +731,27 @@ def build_video(story):
 
     for index, scene in enumerate(story["scenes"]):
 
-        print(f"\nRendering movie scene {index + 1}/6")
+        print(
+            f"\nProcessing scene {index + 1}/6"
+        )
 
-        video_path = get_scene_video(scene, index)
+        image_path = generate_scene_image(
+            story,
+            scene,
+            index
+        )
 
-        audio_path = MEDIA / f"voice_{index + 1}.mp3"
-        subtitle_path = MEDIA / f"captions_{index + 1}.srt"
-        rendered_path = MEDIA / f"rendered_{index + 1}.mp4"
+        audio_path = (
+            MEDIA / f"voice_{index + 1}.mp3"
+        )
+
+        subtitle_path = (
+            MEDIA / f"captions_{index + 1}.srt"
+        )
+
+        rendered_path = (
+            MEDIA / f"rendered_{index + 1}.mp4"
+        )
 
         boundaries = asyncio.run(
             generate_voice(
@@ -687,7 +760,9 @@ def build_video(story):
             )
         )
 
-        audio_duration = duration_of(audio_path)
+        audio_duration = duration_of(
+            audio_path
+        )
 
         create_subtitles(
             boundaries,
@@ -697,7 +772,7 @@ def build_video(story):
         )
 
         render_scene(
-            video_path,
+            image_path,
             audio_path,
             subtitle_path,
             rendered_path
@@ -705,8 +780,7 @@ def build_video(story):
 
         rendered_scenes.append(rendered_path)
 
-    # Smooth video and audio transitions.
-    print("\nJoining scenes with cinematic transitions...")
+    print("\nJoining six cinematic scenes...")
 
     command = ["ffmpeg", "-y"]
 
@@ -720,7 +794,9 @@ def build_video(story):
     current_video = "[0:v]"
     current_audio = "[0:a]"
 
-    elapsed = duration_of(rendered_scenes[0])
+    elapsed = duration_of(
+        rendered_scenes[0]
+    )
 
     for index in range(1, len(rendered_scenes)):
 
@@ -730,7 +806,10 @@ def build_video(story):
         output_video = f"[v{index}]"
         output_audio = f"[a{index}]"
 
-        offset = max(0, elapsed - transition)
+        offset = max(
+            0,
+            elapsed - transition
+        )
 
         filter_parts.append(
             f"{current_video}{next_video}"
@@ -742,23 +821,26 @@ def build_video(story):
 
         filter_parts.append(
             f"{current_audio}{next_audio}"
-            f"acrossfade=d={transition}:c1=tri:c2=tri"
+            f"acrossfade=d={transition}:"
+            f"c1=tri:c2=tri"
             f"{output_audio}"
         )
 
         elapsed += (
-            duration_of(rendered_scenes[index]) - transition
+            duration_of(rendered_scenes[index])
+            - transition
         )
 
         current_video = output_video
         current_audio = output_audio
 
-    filter_complex = ";".join(filter_parts)
-
-    final_video = OUTPUT / "midnight_files_short.mp4"
+    final_video = (
+        OUTPUT / "midnight_files_short.mp4"
+    )
 
     command.extend([
-        "-filter_complex", filter_complex,
+        "-filter_complex",
+        ";".join(filter_parts),
         "-map", current_video,
         "-map", current_audio,
         "-c:v", "libx264",
@@ -785,10 +867,16 @@ def upload_to_youtube(video_path, story):
 
     credentials = Credentials(
         token=None,
-        refresh_token=os.environ["YOUTUBE_REFRESH_TOKEN"],
+        refresh_token=os.environ[
+            "YOUTUBE_REFRESH_TOKEN"
+        ],
         token_uri="https://oauth2.googleapis.com/token",
-        client_id=os.environ["YOUTUBE_CLIENT_ID"],
-        client_secret=os.environ["YOUTUBE_CLIENT_SECRET"],
+        client_id=os.environ[
+            "YOUTUBE_CLIENT_ID"
+        ],
+        client_secret=os.environ[
+            "YOUTUBE_CLIENT_SECRET"
+        ],
         scopes=[
             "https://www.googleapis.com/auth/youtube.upload"
         ]
@@ -802,15 +890,8 @@ def upload_to_youtube(video_path, story):
         credentials=credentials
     )
 
-    credits = "\n".join(
-        scene.get("credit", "")
-        for scene in story["scenes"]
-    )
-
     description = (
         story.get("description", "")
-        + "\n\nStock video footage credits:\n"
-        + credits
         + "\n\n#Shorts #Horror #ScaryStory"
     )
 
@@ -820,6 +901,7 @@ def upload_to_youtube(video_path, story):
     )
 
     if isinstance(tags, str):
+
         tags = [
             item.strip()
             for item in tags.split(",")
@@ -860,9 +942,12 @@ def upload_to_youtube(video_path, story):
 
     while response is None:
 
-        status, response = upload_request.next_chunk()
+        status, response = (
+            upload_request.next_chunk()
+        )
 
         if status:
+
             print(
                 "Upload progress:",
                 int(status.progress() * 100),
@@ -887,7 +972,8 @@ def main():
 
     required = [
         "GEMINI_API_KEY",
-        "PIXABAY_API_KEY",
+        "CLOUDFLARE_ACCOUNT_ID",
+        "CLOUDFLARE_API_TOKEN",
         "YOUTUBE_REFRESH_TOKEN",
         "YOUTUBE_CLIENT_ID",
         "YOUTUBE_CLIENT_SECRET"
@@ -904,19 +990,21 @@ def main():
             + ", ".join(missing)
         )
 
-    print("================================")
-    print("MIDNIGHT FILES CINEMATIC ENGINE")
-    print("================================")
+    print("===================================")
+    print("MIDNIGHT FILES - AI HORROR ENGINE")
+    print("===================================")
 
-    print("\nVoice:", VOICE)
-    print("Generating horror screenplay...")
+    print("Voice:", VOICE)
+    print("Image model:", CLOUDFLARE_MODEL)
+
+    print("\nGenerating horror screenplay...")
 
     story = generate_story()
 
     print("\nTITLE:", story["title"])
     print("\nSTORY:", story["narration"])
 
-    print("\nGenerating six cinematic scenes...")
+    print("\nGenerating six original AI images...")
 
     video = build_video(story)
 
