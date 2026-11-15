@@ -135,7 +135,7 @@ The story must contain:
 - A surprising ending.
 - Natural narration suitable for a scary male voice.
 
-Return ONLY valid JSON in this structure:
+Return ONLY valid JSON in this exact structure:
 
 {
   "title": "Story title",
@@ -174,6 +174,10 @@ Do not use copyrighted characters.
 Do not include gore or graphic violence.
 
 The six narration parts together must form the entire story.
+
+Keep the JSON compact.
+Do not include markdown or explanations.
+Make sure every JSON string is properly closed.
 """
 
     url = (
@@ -193,8 +197,8 @@ The six narration parts together must form the entire story.
             }],
             "generationConfig": {
                 "responseMimeType": "application/json",
-                "temperature": 0.9,
-                "maxOutputTokens": 2048
+                "temperature": 0.8,
+                "maxOutputTokens": 8192
             }
         }
     )
@@ -202,19 +206,58 @@ The six narration parts together must form the entire story.
     data = response.json()
 
     try:
-        raw = data["candidates"][0]["content"]["parts"][0]["text"]
+        candidates = data.get("candidates", [])
+
+        if not candidates:
+            raise RuntimeError(
+                "Gemini returned no candidates: "
+                + str(data.get("error", data))[:2000]
+            )
+
+        candidate = candidates[0]
+        finish_reason = candidate.get("finishReason", "")
+
+        if finish_reason == "MAX_TOKENS":
+            raise RuntimeError(
+                "Gemini reached its output token limit. "
+                "The story was incomplete. Increase maxOutputTokens "
+                "or shorten the prompt."
+            )
+
+        parts = candidate.get("content", {}).get("parts", [])
+
+        raw = "".join(
+            part.get("text", "")
+            for part in parts
+            if part.get("text")
+        ).strip()
+
+        if not raw:
+            raise RuntimeError(
+                "Gemini returned an empty response."
+            )
+
+        # Remove accidental Markdown fences if present.
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+
         story = json.loads(raw)
 
     except Exception as error:
+        print("Gemini finish reason:", data.get(
+            "candidates", [{}])[0].get("finishReason", "unknown")
+        )
+        print("Gemini response preview:", str(data)[:3000])
+
         raise RuntimeError(
-            f"Gemini returned invalid JSON: {data}"
+            f"Gemini story generation failed: {error}"
         ) from error
 
     scenes = story.get("scenes", [])
 
     if len(scenes) != 6:
         raise RuntimeError(
-            "Gemini did not generate exactly six scenes."
+            f"Gemini generated {len(scenes)} scenes instead of 6."
         )
 
     for scene in scenes:
@@ -223,7 +266,7 @@ The six narration parts together must form the entire story.
 
         if not scene["narration"] or not scene["visual_query"]:
             raise RuntimeError(
-                "A scene is missing required information."
+                "A scene is missing narration or visual_query."
             )
 
     story["title"] = clean(story.get("title")) or "Midnight Files"
@@ -245,6 +288,9 @@ The six narration parts together must form the entire story.
             f"Story length is {word_count} words. "
             "Expected approximately 115–145."
         )
+
+    print("Story generated successfully.")
+    print("Word count:", word_count)
 
     return story
 
