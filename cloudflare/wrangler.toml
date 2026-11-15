@@ -1,0 +1,7 @@
+name = "midnight-files-connect"
+main = "worker.js"
+compatibility_date = "2026-11-15"
+
+[[kv_namespaces]]
+binding = "TOKENS"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
