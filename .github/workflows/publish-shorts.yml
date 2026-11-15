@@ -33,6 +33,45 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Check available Gemini models
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python - <<'PY'
+          import os
+          import requests
+
+          url = "https://generativelanguage.googleapis.com/v1beta/models"
+
+          response = requests.get(
+              url,
+              params={"key": os.environ["GEMINI_API_KEY"]},
+              timeout=30
+          )
+
+          print("Gemini API status:", response.status_code)
+
+          if not response.ok:
+              print("API error:", response.text[:1000])
+              raise SystemExit(1)
+
+          models = response.json().get("models", [])
+
+          print("\nModels supporting generateContent:\n")
+
+          found = False
+
+          for model in models:
+              if "generateContent" in model.get(
+                  "supportedGenerationMethods", []
+              ):
+                  print(model.get("name"))
+                  found = True
+
+          if not found:
+              print("No compatible models found.")
+          PY
+
       - name: Get YouTube credentials
         env:
           WORKER_URL: ${{ secrets.MIDNIGHT_WORKER_URL }}
