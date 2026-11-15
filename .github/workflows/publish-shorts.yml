@@ -12,7 +12,7 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
@@ -33,45 +33,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Check available Gemini models
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          python - <<'PY'
-          import os
-          import requests
-
-          url = "https://generativelanguage.googleapis.com/v1beta/models"
-
-          response = requests.get(
-              url,
-              params={"key": os.environ["GEMINI_API_KEY"]},
-              timeout=30
-          )
-
-          print("Gemini API status:", response.status_code)
-
-          if not response.ok:
-              print("API error:", response.text[:1000])
-              raise SystemExit(1)
-
-          models = response.json().get("models", [])
-
-          print("\nModels supporting generateContent:\n")
-
-          found = False
-
-          for model in models:
-              if "generateContent" in model.get(
-                  "supportedGenerationMethods", []
-              ):
-                  print(model.get("name"))
-                  found = True
-
-          if not found:
-              print("No compatible models found.")
-          PY
-
       - name: Get YouTube credentials
         env:
           WORKER_URL: ${{ secrets.MIDNIGHT_WORKER_URL }}
@@ -81,13 +42,24 @@ jobs:
             -H "Authorization: Bearer $SCHEDULER_SECRET" \
             "${WORKER_URL%/}/internal/config")
 
-          echo "YOUTUBE_REFRESH_TOKEN=$(echo "$CONFIG" | jq -r '.youtube_refresh_token')" >> "$GITHUB_ENV"
-          echo "YOUTUBE_CLIENT_ID=$(echo "$CONFIG" | jq -r '.youtube_client_id')" >> "$GITHUB_ENV"
-          echo "YOUTUBE_CLIENT_SECRET=$(echo "$CONFIG" | jq -r '.youtube_client_secret')" >> "$GITHUB_ENV"
+          YT_REFRESH_TOKEN=$(echo "$CONFIG" | jq -r '.youtube_refresh_token')
+          YT_CLIENT_ID=$(echo "$CONFIG" | jq -r '.youtube_client_id')
+          YT_CLIENT_SECRET=$(echo "$CONFIG" | jq -r '.youtube_client_secret')
+
+          echo "::add-mask::$YT_REFRESH_TOKEN"
+          echo "::add-mask::$YT_CLIENT_ID"
+          echo "::add-mask::$YT_CLIENT_SECRET"
+
+          {
+            echo "YOUTUBE_REFRESH_TOKEN=$YT_REFRESH_TOKEN"
+            echo "YOUTUBE_CLIENT_ID=$YT_CLIENT_ID"
+            echo "YOUTUBE_CLIENT_SECRET=$YT_CLIENT_SECRET"
+          } >> "$GITHUB_ENV"
 
       - name: Generate and publish Short
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           python bot.py
