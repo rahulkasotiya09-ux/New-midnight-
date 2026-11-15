@@ -83,7 +83,7 @@ def request_with_retry(method, url, **kwargs):
             response = requests.request(
                 method,
                 url,
-                timeout=60,
+                timeout=(20, 180),
                 **kwargs
             )
 
@@ -194,7 +194,8 @@ The six narration parts together must form the entire story.
             }],
             "generationConfig": {
                 "responseMimeType": "application/json",
-                "temperature": 0.9
+                "temperature": 0.9,
+                "maxOutputTokens": 2048
             }
         }
     )
