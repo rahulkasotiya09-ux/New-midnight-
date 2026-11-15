@@ -1,541 +1,729 @@
 
 import os
-import json
 import re
-import subprocess
-import datetime
-import pathlib
-import requests
-import asyncio
+import json
 import time
+import asyncio
+import subprocess
+from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+import requests
 import edge_tts
 
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from googleapiclient.errors import HttpError
 
 
-OUT = pathlib.Path("output")
-OUT.mkdir(exist_ok=True)
+# ==========================================
+# MIDNIGHT FILES SETTINGS
+# ==========================================
 
-W, H = 1080, 1920
-MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+BASE = Path(__file__).resolve().parent
+OUTPUT = BASE / "output"
+MEDIA = OUTPUT / "media"
 
-SCOPES = [
-    "https://www.googleapis.com/auth/youtube.upload"
-]
+OUTPUT.mkdir(exist_ok=True)
+MEDIA.mkdir(exist_ok=True)
 
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
-def ask_gemini():
+VOICE = "en-US-RogerNeural"
+VOICE_RATE = "-10%"
+VOICE_PITCH = "-18Hz"
 
-    key = os.environ["GEMINI_API_KEY"]
+WIDTH = 1080
+HEIGHT = 1920
+FPS = 30
 
-    prompt = """Write ONE original, suspenseful English horror story
-for a YouTube Short.
 
-Return ONLY valid JSON with keys:
-title, narration, description, tags.
+# ==========================================
+# GENERAL HELPERS
+# ==========================================
 
-Narration must be 115-145 words.
-Strong hook in first sentence.
-Clear ending/twist.
-Advertiser-friendly.
-No copyrighted characters or copied plots.
-Title <= 65 characters.
-Description 1-2 sentences.
-Tags must be an array of 5-8 short tags.
-Avoid generic clickbait."""
-
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/"
-        f"models/{MODEL}:generateContent?key={key}"
-    )
-
-    delays = [10, 20, 40, 60, 60]
-    last_error = None
-
-    for attempt, delay in enumerate(delays, start=1):
-
-        try:
-            response = requests.post(
-                url,
-                json={
-                    "contents": [
-                        {"parts": [{"text": prompt}]}
-                    ],
-                    "generationConfig": {
-                        "temperature": 0.95,
-                        "responseMimeType": "application/json"
-                    }
-                },
-                timeout=90
-            )
-
-            response.raise_for_status()
-
-            raw = response.json()["candidates"][0]["content"]["parts"][0]["text"]
-
-            raw = re.sub(
-                r"^```(?:json)?|```$",
-                "",
-                raw.strip(),
-                flags=re.M
-            ).strip()
-
-            data = json.loads(raw)
-            data["narration"] = data["narration"].strip()
-
-            print("Gemini story generated successfully.")
-
-            return data
-
-        except requests.exceptions.HTTPError as exc:
-
-            last_error = exc
-            status = (
-                exc.response.status_code
-                if exc.response is not None
-                else None
-            )
-
-            if status not in [429, 500, 502, 503, 504]:
-                raise
-
-        except requests.exceptions.RequestException as exc:
-            last_error = exc
-
-        if attempt < len(delays):
-            print(
-                f"Gemini temporarily unavailable. "
-                f"Retrying in {delay} seconds..."
-            )
-            time.sleep(delay)
-
-    raise RuntimeError(
-        "Gemini API failed after multiple retry attempts."
-    ) from last_error
-
-
-def font(size, bold=False):
-
-    candidates = [
-        "/usr/share/fonts/truetype/dejavu/"
-        + ("DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"),
-
-        "/usr/share/fonts/truetype/liberation2/"
-        + ("LiberationSans-Bold.ttf" if bold else "LiberationSans-Regular.ttf")
-    ]
-
-    for path in candidates:
-        if os.path.exists(path):
-            return ImageFont.truetype(path, size)
-
-    return ImageFont.load_default()
-
-
-def make_background(index, caption):
-
-    im = Image.new("RGB", (W, H), (5, 6, 12))
-    px = im.load()
-
-    for y in range(H):
-        shade = int(7 + 20 * y / H)
-
-        for x in range(W):
-            glow = max(
-                0,
-                1 - (
-                    ((x - W * .72) ** 2 +
-                     (y - H * .28) ** 2) ** .5
-                ) / 650
-            )
-
-            px[x, y] = (
-                int(shade + 18 * glow),
-                int(shade + 2 * glow),
-                int(shade + 8 * glow)
-            )
-
-    d = ImageDraw.Draw(im, "RGBA")
-
-    d.ellipse(
-        (730 + index * 13, 180, 930 + index * 13, 380),
-        fill=(180, 185, 195, 28)
-    )
-
-    for j in range(7):
-        yy = 900 + j * 105
-
-        d.ellipse(
-            (-250 + j * 60, yy, 1250 - j * 30, yy + 250),
-            fill=(120, 125, 145, 10)
-        )
-
-    base = 1190
-
-    d.polygon(
-        [
-            (0, base + 300),
-            (180, base + 70),
-            (360, base + 280),
-            (520, base + 30),
-            (740, base + 310),
-            (900, base + 90),
-            (1080, base + 270),
-            (1080, 1920),
-            (0, 1920)
-        ],
-        fill=(3, 4, 8, 255)
-    )
-
-    d.rectangle(
-        (380, base - 30, 760, base + 310),
-        fill=(7, 7, 12, 255)
-    )
-
-    d.polygon(
-        [(340, base - 30), (565, base - 210), (800, base - 30)],
-        fill=(4, 4, 9, 255)
-    )
-
-    d.rectangle(
-        (455, base + 45, 535, base + 145),
-        fill=(175, 35, 28, 95)
-    )
-
-    d.rectangle(
-        (630, base + 45, 710, base + 145),
-        fill=(175, 35, 28, 75)
-    )
-
-    d.rounded_rectangle(
-        (70, 1370, 1010, 1745),
-        radius=34,
-        fill=(0, 0, 0, 185),
-        outline=(170, 25, 35, 150),
-        width=3
-    )
-
-    f = font(48, True)
-
-    words = caption.split()
-    lines = []
-    line = ""
-
-    for word in words:
-        test = (line + " " + word).strip()
-
-        if d.textbbox((0, 0), test, font=f)[2] > 850:
-            lines.append(line)
-            line = word
-        else:
-            line = test
-
-    if line:
-        lines.append(line)
-
-    lines = lines[:4]
-
-    line_h = 66
-    y = 1450 + (230 - len(lines) * line_h) // 2
-
-    for ln in lines:
-        box = d.textbbox((0, 0), ln, font=f)
-
-        d.text(
-            ((W - (box[2] - box[0])) // 2, y),
-            ln,
-            font=f,
-            fill=(245, 241, 238, 255),
-            stroke_width=2,
-            stroke_fill=(0, 0, 0, 255)
-        )
-
-        y += line_h
-
-    d.text(
-        (70, 70),
-        "MIDNIGHT FILES  •  HORROR SHORTS",
-        font=font(28, True),
-        fill=(205, 65, 70, 230)
-    )
-
-    return im
-
-
-def split_captions(text, count=10):
-
-    words = text.split()
-
-    n = max(
-        1,
-        min(count, (len(words) + 8) // 9)
-    )
-
-    size = (len(words) + n - 1) // n
-
-    return [
-        " ".join(words[i:i + size])
-        for i in range(0, len(words), size)
-    ]
-
-
-async def create_voice(text, path):
-
-    delays = [10, 20, 40, 60, 60]
-    last_error = None
-
-    for attempt, delay in enumerate(delays, start=1):
-
-        try:
-            communicate = edge_tts.Communicate(
-                text,
-                "en-US-GuyNeural",
-                rate="-5%",
-                pitch="-8Hz"
-            )
-
-            await communicate.save(str(path))
-
-            print("Voice narration created successfully.")
-            return
-
-        except Exception as exc:
-
-            last_error = exc
-            status = getattr(exc, "status", None)
-
-            if status not in [429, 500, 502, 503, 504]:
-                raise
-
-            if attempt < len(delays):
-                print(
-                    f"Edge TTS temporarily unavailable. "
-                    f"Retrying in {delay} seconds..."
-                )
-                await asyncio.sleep(delay)
-
-    raise RuntimeError(
-        "Edge TTS is still unavailable after multiple attempts."
-    ) from last_error
-
-
-def render_video(story, audio_path, out_path):
-
-    caps = split_captions(story["narration"], 11)
-
-    probe = subprocess.check_output(
-        [
-            "ffprobe",
-            "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            str(audio_path)
-        ],
+def run(command):
+    result = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True
     )
 
-    duration = float(probe.strip())
-
-    scene_dir = OUT / "scenes"
-    scene_dir.mkdir(exist_ok=True)
-
-    concat = OUT / "frames.txt"
-    each = duration / len(caps)
-
-    with open(concat, "w") as f:
-
-        for i, cap in enumerate(caps):
-
-            p = scene_dir / f"scene_{i:02d}.png"
-
-            make_background(i, cap).save(p)
-
-            f.write(f"file '{p.resolve()}'\n")
-            f.write(f"duration {each:.3f}\n")
-
-        last = scene_dir / f"scene_{len(caps)-1:02d}.png"
-
-        f.write(f"file '{last.resolve()}'\n")
-
-    silent = OUT / "silent.mp4"
-
-    subprocess.run(
-        [
-            "ffmpeg", "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", str(concat),
-            "-vf", "scale=1080:1920,format=yuv420p",
-            "-r", "30",
-            "-t", str(duration),
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            str(silent)
-        ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
-    )
-
-    subprocess.run(
-        [
-            "ffmpeg", "-y",
-            "-i", str(silent),
-            "-i", str(audio_path),
-            "-map", "0:v:0",
-            "-map", "1:a:0",
-            "-c:v", "copy",
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-shortest",
-            "-movflags", "+faststart",
-            str(out_path)
-        ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
-    )
-
-
-def youtube_upload(video_path, story):
-
-    print("Starting YouTube OAuth authentication...")
-
-    refresh = os.environ.get(
-        "YOUTUBE_REFRESH_TOKEN", ""
-    ).strip()
-
-    client_id = os.environ.get(
-        "YOUTUBE_CLIENT_ID", ""
-    ).strip()
-
-    client_secret = os.environ.get(
-        "YOUTUBE_CLIENT_SECRET", ""
-    ).strip()
-
-    print("Refresh token present:", bool(refresh))
-    print("Client ID present:", bool(client_id))
-    print("Client secret present:", bool(client_secret))
-
-    if not all([refresh, client_id, client_secret]):
+    if result.returncode != 0:
         raise RuntimeError(
-            "Missing YouTube OAuth GitHub Secrets."
+            "Command failed:\n"
+            + result.stderr[-4000:]
         )
 
-    creds = Credentials(
-        token=None,
-        refresh_token=refresh,
-        token_uri="https://oauth2.googleapis.com/token",
-        client_id=client_id,
-        client_secret=client_secret,
-        scopes=SCOPES
+    return result.stdout.strip()
+
+
+def duration_of(path):
+    result = run([
+        "ffprobe",
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(path)
+    ])
+
+    return float(result)
+
+
+def clean(text):
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def request_with_retry(method, url, **kwargs):
+    last_error = None
+
+    for attempt in range(5):
+        try:
+            response = requests.request(
+                method,
+                url,
+                timeout=60,
+                **kwargs
+            )
+
+            if response.status_code in (429, 500, 502, 503, 504):
+                last_error = response.text[:500]
+                time.sleep(10 * (attempt + 1))
+                continue
+
+            response.raise_for_status()
+            return response
+
+        except requests.RequestException as error:
+            last_error = str(error)
+
+            if attempt == 4:
+                break
+
+            time.sleep(10 * (attempt + 1))
+
+    raise RuntimeError(
+        f"Network request failed: {last_error}"
     )
 
-    try:
 
-        creds.refresh(Request())
+# ==========================================
+# GEMINI STORY GENERATION
+# ==========================================
 
-        print(
-            "SUCCESS: Google OAuth authentication completed."
-        )
+def generate_story():
 
-    except Exception as e:
+    api_key = os.environ["GEMINI_API_KEY"]
 
-        print("OAUTH AUTHENTICATION FAILED.")
-        print("Error type:", type(e).__name__)
+    prompt = """
+Create ONE original, suspenseful, advertiser-friendly
+English horror story for a YouTube Short.
 
-        if hasattr(e, "args"):
-            print("OAuth error:", str(e).split("', {")[0])
+The story must contain:
+- 115 to 145 spoken words.
+- A powerful hook in the first sentence.
+- Increasing suspense.
+- A surprising ending.
+- Natural narration suitable for a scary male voice.
 
-        raise
+Return ONLY valid JSON in this structure:
 
-    try:
+{
+  "title": "Story title",
+  "description": "Short YouTube description",
+  "tags": ["horror", "scary story", "shorts"],
+  "scenes": [
+    {
+      "narration": "First consecutive part of the story.",
+      "visual_query": "dark staircase",
+      "mood": "eerie and suspenseful"
+    }
+  ]
+}
 
-        yt = build(
-            "youtube",
-            "v3",
-            credentials=creds
-        )
+IMPORTANT SCENE RULES:
 
-        body = {
-            "snippet": {
-                "title": story["title"][:100],
-                "description": (
-                    story["description"]
-                    + "\n\n#shorts #horror #scarystories"
-                ),
-                "tags": story.get("tags", []) + [
-                    "shorts",
-                    "horror",
-                    "scarystories"
-                ],
-                "categoryId": "24",
-                "defaultLanguage": "en"
-            },
-            "status": {
-                "privacyStatus": "public",
-                "selfDeclaredMadeForKids": False
+Create exactly 6 scenes.
+
+Divide the complete story into 6 consecutive narration parts.
+Do not skip or repeat any sentence.
+
+Every visual_query must describe what viewers should
+actually SEE during that narration.
+
+Examples:
+- footsteps upstairs = dark staircase
+- someone looking through a window = person at window
+- an empty house = empty living room
+- a door slowly opening = opening wooden door
+- walking through woods = dark forest path
+- a phone ringing = mobile phone on table
+
+Use short, searchable stock-video phrases.
+Do not use generic queries like horror, scary, creepy.
+Do not use copyrighted characters.
+Do not include gore or graphic violence.
+
+The six narration parts together must form the entire story.
+"""
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/"
+        f"models/{GEMINI_MODEL}:generateContent"
+    )
+
+    response = request_with_retry(
+        "POST",
+        url,
+        params={"key": api_key},
+        json={
+            "contents": [{
+                "parts": [{"text": prompt}]
+            }],
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "temperature": 0.9
             }
         }
+    )
 
-        req = yt.videos().insert(
-            part="snippet,status",
-            body=body,
-            media_body=MediaFileUpload(
-                str(video_path),
-                mimetype="video/mp4",
-                resumable=True
+    data = response.json()
+
+    try:
+        raw = data["candidates"][0]["content"]["parts"][0]["text"]
+        story = json.loads(raw)
+
+    except Exception as error:
+        raise RuntimeError(
+            f"Gemini returned invalid JSON: {data}"
+        ) from error
+
+    scenes = story.get("scenes", [])
+
+    if len(scenes) != 6:
+        raise RuntimeError(
+            "Gemini did not generate exactly six scenes."
+        )
+
+    for scene in scenes:
+        scene["narration"] = clean(scene.get("narration"))
+        scene["visual_query"] = clean(scene.get("visual_query"))
+
+        if not scene["narration"] or not scene["visual_query"]:
+            raise RuntimeError("A scene is missing required information.")
+
+    story["title"] = clean(story.get("title")) or "Midnight Files"
+    story["description"] = clean(story.get("description"))
+    story["tags"] = story.get(
+        "tags",
+        ["horror", "scary story", "shorts"]
+    )
+
+    story["narration"] = " ".join(
+        scene["narration"] for scene in scenes
+    )
+
+    word_count = len(story["narration"].split())
+
+    if not 100 <= word_count <= 160:
+        raise RuntimeError(
+            f"Story length is {word_count} words. "
+            "Expected approximately 115–145."
+        )
+
+    return story
+
+
+# ==========================================
+# STORY-MATCHED PIXABAY VIDEO SEARCH
+# ==========================================
+
+def find_video(query):
+
+    api_key = os.environ["PIXABAY_API_KEY"]
+
+    response = request_with_retry(
+        "GET",
+        "https://pixabay.com/api/videos/",
+        params={
+            "key": api_key,
+            "q": query[:100],
+            "per_page": 10,
+            "safesearch": "true",
+            "order": "popular"
+        }
+    )
+
+    hits = response.json().get("hits", [])
+
+    if not hits:
+        return None
+
+    for hit in hits:
+        videos = hit.get("videos", {})
+
+        # Medium is available for Pixabay video results.
+        video = videos.get("medium", {})
+
+        if video.get("url"):
+            return {
+                "url": video["url"],
+                "page": hit.get("pageURL", ""),
+                "creator": hit.get("user", "Pixabay contributor")
+            }
+
+    return None
+
+
+def download_video(url, destination):
+
+    response = request_with_retry(
+        "GET",
+        url,
+        stream=True
+    )
+
+    with open(destination, "wb") as file:
+        for chunk in response.iter_content(1024 * 1024):
+            if chunk:
+                file.write(chunk)
+
+    if not destination.exists() or destination.stat().st_size < 10000:
+        raise RuntimeError("Downloaded video is empty.")
+
+    return destination
+
+
+def get_scene_video(scene, index):
+
+    query = scene["visual_query"]
+
+    print(
+        f"Searching scene {index + 1}: {query}"
+    )
+
+    result = find_video(query)
+
+    if not result:
+        raise RuntimeError(
+            f"No matching Pixabay video found for: {query}. "
+            "Stopping instead of using unrelated footage."
+        )
+
+    destination = MEDIA / f"scene_{index + 1}.mp4"
+
+    download_video(
+        result["url"],
+        destination
+    )
+
+    scene["credit"] = (
+        f"Scene {index + 1}: {result['creator']} "
+        f"- {result['page']}"
+    )
+
+    print("Downloaded matching scene:", query)
+
+    return destination
+
+
+# ==========================================
+# DEEP MALE VOICE + WORD TIMING
+# ==========================================
+
+async def generate_voice(text, audio_path):
+
+    last_error = None
+
+    for attempt in range(5):
+
+        try:
+            communicator = edge_tts.Communicate(
+                text=text,
+                voice=VOICE,
+                rate=VOICE_RATE,
+                pitch=VOICE_PITCH
+            )
+
+            audio_data = bytearray()
+            word_boundaries = []
+
+            async for event in communicator.stream():
+
+                if event["type"] == "audio":
+                    audio_data.extend(event["data"])
+
+                elif event["type"] == "WordBoundary":
+                    word_boundaries.append({
+                        "text": event["text"],
+                        "start": event["offset"] / 10000000,
+                        "end": (
+                            event["offset"] + event["duration"]
+                        ) / 10000000
+                    })
+
+            if len(audio_data) < 1000:
+                raise RuntimeError("Voice audio is empty.")
+
+            audio_path.write_bytes(audio_data)
+
+            return word_boundaries
+
+        except Exception as error:
+
+            last_error = error
+
+            if attempt == 4:
+                break
+
+            await asyncio.sleep(10 * (attempt + 1))
+
+    raise RuntimeError(
+        f"Voice generation failed: {last_error}"
+    )
+
+
+# ==========================================
+# SYNCHRONIZED SUBTITLES
+# ==========================================
+
+def srt_timestamp(seconds):
+
+    milliseconds = max(0, int(seconds * 1000))
+
+    hours, milliseconds = divmod(milliseconds, 3600000)
+    minutes, milliseconds = divmod(milliseconds, 60000)
+    seconds, milliseconds = divmod(milliseconds, 1000)
+
+    return (
+        f"{hours:02}:{minutes:02}:"
+        f"{seconds:02},{milliseconds:03}"
+    )
+
+
+def create_subtitles(boundaries, audio_duration, path):
+
+    # Fallback timing if the TTS service provides no word metadata.
+    if not boundaries:
+        words = " ".join([])
+
+        raise RuntimeError(
+            "TTS did not provide word timing information; "
+            "refusing to create falsely synchronized captions."
+        )
+
+    groups = []
+
+    for index in range(0, len(boundaries), 4):
+
+        group = boundaries[index:index + 4]
+
+        text = " ".join(
+            item["text"] for item in group
+        )
+
+        start = group[0]["start"]
+        end = group[-1]["end"]
+
+        end = min(end, audio_duration)
+
+        if end <= start:
+            end = min(start + 0.25, audio_duration)
+
+        groups.append((start, end, text))
+
+    lines = []
+
+    for index, (start, end, text) in enumerate(groups, start=1):
+
+        lines.extend([
+            str(index),
+            f"{srt_timestamp(start)} --> {srt_timestamp(end)}",
+            text,
+            ""
+        ])
+
+    path.write_text(
+        "\n".join(lines),
+        encoding="utf-8"
+    )
+
+
+# ==========================================
+# RENDER EACH STORY SCENE
+# ==========================================
+
+def render_scene(video_path, audio_path, subtitle_path, output_path):
+
+    audio_duration = duration_of(audio_path)
+
+    subtitle_file = str(subtitle_path.resolve())
+    subtitle_file = subtitle_file.replace("\\", "/")
+    subtitle_file = subtitle_file.replace(":", r"\:")
+    subtitle_file = subtitle_file.replace("'", r"\'")
+
+    subtitle_filter = (
+        f"subtitles='{subtitle_file}':"
+        "force_style='FontName=DejaVu Sans,"
+        "FontSize=19,"
+        "Bold=1,"
+        "PrimaryColour=&H00FFFFFF,"
+        "OutlineColour=&H00000000,"
+        "BorderStyle=1,"
+        "Outline=3,"
+        "Shadow=1,"
+        "Alignment=2,"
+        "MarginV=250'"
+    )
+
+    video_filter = (
+        "scale=1080:1920:force_original_aspect_ratio=increase,"
+        "crop=1080:1920,"
+        "setsar=1,"
+        "fps=30,"
+        "eq=contrast=1.08:saturation=0.85:brightness=-0.03,"
+        "fade=t=in:st=0:d=0.25,"
+        + subtitle_filter
+    )
+
+    run([
+        "ffmpeg",
+        "-y",
+        "-stream_loop", "-1",
+        "-i", str(video_path),
+        "-i", str(audio_path),
+        "-t", f"{audio_duration:.3f}",
+        "-vf", video_filter,
+        "-map", "0:v:0",
+        "-map", "1:a:0",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-pix_fmt", "yuv420p",
+        "-r", "30",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-ar", "44100",
+        "-shortest",
+        str(output_path)
+    ])
+
+
+# ==========================================
+# BUILD COMPLETE SHORT
+# ==========================================
+
+def build_video(story):
+
+    rendered_scenes = []
+
+    for index, scene in enumerate(story["scenes"]):
+
+        print(
+            f"\nProcessing scene {index + 1}/6"
+        )
+
+        video_path = get_scene_video(scene, index)
+
+        audio_path = MEDIA / f"voice_{index + 1}.mp3"
+        subtitle_path = MEDIA / f"captions_{index + 1}.srt"
+        rendered_path = MEDIA / f"rendered_{index + 1}.mp4"
+
+        boundaries = asyncio.run(
+            generate_voice(
+                scene["narration"],
+                audio_path
             )
         )
 
-        response = req.execute()
+        audio_duration = duration_of(audio_path)
 
-        print(
-            "Published:",
-            "https://youtube.com/shorts/" + response["id"]
+        create_subtitles(
+            boundaries,
+            audio_duration,
+            subtitle_path
         )
 
-    except HttpError as e:
+        render_scene(
+            video_path,
+            audio_path,
+            subtitle_path,
+            rendered_path
+        )
 
-        print("YOUTUBE UPLOAD FAILED:", str(e))
-        raise
+        rendered_scenes.append(rendered_path)
 
+    # All six scenes use identical output dimensions and codecs.
+    # Concatenate them into one finished video.
+    list_path = MEDIA / "scenes.txt"
+
+    with open(list_path, "w", encoding="utf-8") as file:
+        for scene_path in rendered_scenes:
+            file.write(
+                f"file '{scene_path.resolve()}'\n"
+            )
+
+    final_video = OUTPUT / "midnight_files_short.mp4"
+
+    run([
+        "ffmpeg",
+        "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", str(list_path),
+        "-c", "copy",
+        "-movflags", "+faststart",
+        str(final_video)
+    ])
+
+    return final_video
+
+
+# ==========================================
+# YOUTUBE UPLOAD
+# ==========================================
+
+def upload_to_youtube(video_path, story):
+
+    credentials = Credentials(
+        token=None,
+        refresh_token=os.environ["YOUTUBE_REFRESH_TOKEN"],
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=os.environ["YOUTUBE_CLIENT_ID"],
+        client_secret=os.environ["YOUTUBE_CLIENT_SECRET"],
+        scopes=[
+            "https://www.googleapis.com/auth/youtube.upload"
+        ]
+    )
+
+    credentials.refresh(Request())
+
+    youtube = build(
+        "youtube",
+        "v3",
+        credentials=credentials
+    )
+
+    credits = "\n".join(
+        scene.get("credit", "")
+        for scene in story["scenes"]
+    )
+
+    description = (
+        story.get("description", "")
+        + "\n\nStock video footage credits:\n"
+        + credits
+        + "\n\n#Shorts #Horror #ScaryStory"
+    )
+
+    tags = story.get(
+        "tags",
+        ["horror", "scary story", "shorts"]
+    )
+
+    if isinstance(tags, str):
+        tags = [
+            item.strip()
+            for item in tags.split(",")
+            if item.strip()
+        ]
+
+    tags = list(dict.fromkeys(
+        tags + ["Shorts", "Horror"]
+    ))
+
+    body = {
+        "snippet": {
+            "title": story["title"][:100],
+            "description": description[:4900],
+            "tags": tags[:25],
+            "categoryId": "24"
+        },
+        "status": {
+            "privacyStatus": "public",
+            "selfDeclaredMadeForKids": False
+        }
+    }
+
+    media = MediaFileUpload(
+        str(video_path),
+        mimetype="video/mp4",
+        chunksize=8 * 1024 * 1024,
+        resumable=True
+    )
+
+    request = youtube.videos().insert(
+        part="snippet,status",
+        body=body,
+        media_body=media
+    )
+
+    response = None
+
+    while response is None:
+
+        status, response = request.next_chunk()
+
+        if status:
+            print(
+                f"Upload progress: "
+                f"{int(status.progress() * 100)}%"
+            )
+
+    video_id = response["id"]
+
+    print(
+        "Published:",
+        f"https://youtube.com/shorts/{video_id}"
+    )
+
+    return video_id
+
+
+# ==========================================
+# MAIN
+# ==========================================
 
 def main():
 
-    print("Generating horror story...")
+    required = [
+        "GEMINI_API_KEY",
+        "PIXABAY_API_KEY",
+        "YOUTUBE_REFRESH_TOKEN",
+        "YOUTUBE_CLIENT_ID",
+        "YOUTUBE_CLIENT_SECRET"
+    ]
 
-    story = ask_gemini()
+    missing = [
+        name for name in required
+        if not os.getenv(name)
+    ]
 
-    stamp = datetime.datetime.now(
-        datetime.timezone.utc
-    ).strftime("%Y%m%d_%H%M%S")
+    if missing:
+        raise RuntimeError(
+            "Missing environment variables: "
+            + ", ".join(missing)
+        )
 
-    audio = OUT / f"voice_{stamp}.mp3"
-    video = OUT / f"horror_{stamp}.mp4"
+    print("MIDNIGHT FILES STARTED")
 
-    print("Creating narration...")
+    print("\nGenerating horror story...")
+    story = generate_story()
 
-    asyncio.run(
-        create_voice(story["narration"], audio)
-    )
+    print("\nTITLE:", story["title"])
+    print("\nSTORY:", story["narration"])
 
-    print("Rendering video...")
+    print("\nGenerating six matching video scenes...")
+    video = build_video(story)
 
-    render_video(story, audio, video)
+    print("\nFinal video:", video)
+    print("Duration:", duration_of(video), "seconds")
 
-    print("Video created:", video)
+    print("\nUploading to YouTube...")
+    upload_to_youtube(video, story)
 
-    print("Uploading to YouTube...")
-
-    youtube_upload(video, story)
-
-    print("ALL TASKS COMPLETED SUCCESSFULLY.")
+    print("\nMIDNIGHT FILES COMPLETED SUCCESSFULLY")
 
 
 if __name__ == "__main__":
