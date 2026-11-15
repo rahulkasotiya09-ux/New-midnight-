@@ -17,7 +17,7 @@ from googleapiclient.http import MediaFileUpload
 
 
 # ==========================================
-# MIDNIGHT FILES SETTINGS
+# MIDNIGHT FILES - CINEMATIC HORROR SETTINGS
 # ==========================================
 
 BASE = Path(__file__).resolve().parent
@@ -29,13 +29,16 @@ MEDIA.mkdir(exist_ok=True)
 
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
-VOICE = "en-US-RogerNeural"
-VOICE_RATE = "-10%"
-VOICE_PITCH = "-18Hz"
+# Deep cinematic male voice
+VOICE = os.getenv("TTS_VOICE", "en-US-ChristopherNeural")
+VOICE_RATE = "-8%"
+VOICE_PITCH = "-25Hz"
 
 WIDTH = 1080
 HEIGHT = 1920
 FPS = 30
+
+TRANSITION_DURATION = 0.35
 
 
 # ==========================================
@@ -52,7 +55,7 @@ def run(command):
 
     if result.returncode != 0:
         raise RuntimeError(
-            "Command failed:\n" + result.stderr[-4000:]
+            "Command failed:\n" + result.stderr[-5000:]
         )
 
     return result.stdout.strip()
@@ -70,8 +73,8 @@ def duration_of(path):
     return float(result)
 
 
-def clean(text):
-    return re.sub(r"\s+", " ", str(text or "")).strip()
+def clean(value):
+    return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
 def request_with_retry(method, url, **kwargs):
@@ -89,9 +92,8 @@ def request_with_retry(method, url, **kwargs):
             if response.status_code in (429, 500, 502, 503, 504):
                 last_error = (
                     f"HTTP {response.status_code}: "
-                    f"{response.text[:2000]}"
+                    f"{response.text[:1500]}"
                 )
-
                 time.sleep(10 * (attempt + 1))
                 continue
 
@@ -111,13 +113,11 @@ def request_with_retry(method, url, **kwargs):
 
             time.sleep(10 * (attempt + 1))
 
-    raise RuntimeError(
-        f"Network request failed: {last_error}"
-    )
+    raise RuntimeError(f"Network request failed: {last_error}")
 
 
 # ==========================================
-# GEMINI STORY GENERATION
+# GEMINI - CINEMATIC STORY GENERATION
 # ==========================================
 
 def generate_story():
@@ -125,59 +125,77 @@ def generate_story():
     api_key = os.environ["GEMINI_API_KEY"]
 
     prompt = """
-Create ONE original, suspenseful, advertiser-friendly
-English horror story for a YouTube Short.
+Create one original cinematic horror short film story.
 
-The story must contain:
-- 115 to 145 spoken words.
-- A powerful hook in the first sentence.
-- Increasing suspense.
-- A surprising ending.
-- Natural narration suitable for a scary male voice.
+Return ONLY valid JSON.
 
-Return ONLY valid JSON in this exact structure:
+STORY REQUIREMENTS:
+- English narration.
+- 115 to 145 spoken words total.
+- Six consecutive scenes.
+- Powerful first-sentence hook.
+- Gradually increasing suspense.
+- Strong unexpected ending.
+- Advertiser-friendly horror.
+- No gore or graphic violence.
+
+VISUAL REQUIREMENTS:
+
+This must feel like a continuous horror MOVIE,
+not six unrelated stock-video clips.
+
+All scenes must belong to the SAME story.
+
+Maintain continuity:
+- Same main character.
+- Same clothing and appearance.
+- Same house or location when appropriate.
+- Same time of night.
+- Consistent atmosphere and lighting.
+- Events must happen in chronological order.
+
+Every scene must visually show what the narration describes.
+
+Use realistic cinematic film shots:
+- Establishing shots.
+- Close-ups.
+- Over-the-shoulder shots.
+- Tracking shots.
+- POV shots.
+- Suspenseful camera angles.
+
+Avoid generic horror footage.
+
+Avoid abstract searches such as:
+"horror", "scary", "creepy".
+
+Use specific searchable descriptions.
+
+Return this exact structure:
 
 {
   "title": "Story title",
-  "description": "Short YouTube description",
+  "description": "YouTube description",
   "tags": ["horror", "scary story", "shorts"],
   "scenes": [
     {
-      "narration": "First consecutive part of the story.",
-      "visual_query": "dark staircase",
-      "mood": "eerie and suspenseful"
+      "narration": "First part of story.",
+      "visual_query": "specific realistic cinematic video search",
+      "visual_description": "Detailed description of the exact shot",
+      "mood": "dark and suspenseful"
     }
   ]
 }
 
-IMPORTANT SCENE RULES:
+EXACTLY SIX SCENES.
 
-Create exactly 6 scenes.
-
-Divide the complete story into 6 consecutive narration parts.
-Do not skip or repeat any sentence.
-
-Every visual_query must describe what viewers should
-actually SEE during that narration.
-
-Examples:
-- footsteps upstairs = dark staircase
-- someone looking through a window = person at window
-- an empty house = empty living room
-- a door slowly opening = opening wooden door
-- walking through woods = dark forest path
-- a phone ringing = mobile phone on table
-
-Use short, searchable stock-video phrases.
-Do not use generic queries like horror, scary, creepy.
-Do not use copyrighted characters.
-Do not include gore or graphic violence.
-
-The six narration parts together must form the entire story.
+Each narration must continue naturally from the previous scene.
+Do not repeat or skip story events.
 
 Keep the JSON compact.
-Do not include markdown or explanations.
-Make sure every JSON string is properly closed.
+Do not use Markdown.
+Do not add explanations.
+Ensure the JSON is complete and valid.
 """
 
     url = (
@@ -185,7 +203,7 @@ Make sure every JSON string is properly closed.
         f"models/{GEMINI_MODEL}:generateContent"
     )
 
-    print("Using Gemini model:", GEMINI_MODEL)
+    print("Using Gemini:", GEMINI_MODEL)
 
     response = request_with_retry(
         "POST",
@@ -205,64 +223,57 @@ Make sure every JSON string is properly closed.
 
     data = response.json()
 
-    try:
-        candidates = data.get("candidates", [])
+    candidates = data.get("candidates", [])
 
-        if not candidates:
-            raise RuntimeError(
-                "Gemini returned no candidates: "
-                + str(data.get("error", data))[:2000]
-            )
-
-        candidate = candidates[0]
-        finish_reason = candidate.get("finishReason", "")
-
-        if finish_reason == "MAX_TOKENS":
-            raise RuntimeError(
-                "Gemini reached its output token limit. "
-                "The story was incomplete. Increase maxOutputTokens "
-                "or shorten the prompt."
-            )
-
-        parts = candidate.get("content", {}).get("parts", [])
-
-        raw = "".join(
-            part.get("text", "")
-            for part in parts
-            if part.get("text")
-        ).strip()
-
-        if not raw:
-            raise RuntimeError(
-                "Gemini returned an empty response."
-            )
-
-        # Remove accidental Markdown fences if present.
-        raw = re.sub(r"^```(?:json)?\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
-
-        story = json.loads(raw)
-
-    except Exception as error:
-        print("Gemini finish reason:", data.get(
-            "candidates", [{}])[0].get("finishReason", "unknown")
-        )
-        print("Gemini response preview:", str(data)[:3000])
-
+    if not candidates:
         raise RuntimeError(
-            f"Gemini story generation failed: {error}"
+            "Gemini returned no candidates: " + str(data)[:2000]
+        )
+
+    candidate = candidates[0]
+
+    if candidate.get("finishReason") == "MAX_TOKENS":
+        raise RuntimeError(
+            "Gemini reached its output token limit. "
+            "The story was incomplete."
+        )
+
+    parts = candidate.get("content", {}).get("parts", [])
+
+    raw = "".join(
+        part.get("text", "")
+        for part in parts
+        if part.get("text")
+    ).strip()
+
+    if not raw:
+        raise RuntimeError("Gemini returned an empty story.")
+
+    raw = re.sub(r"^```(?:json)?\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw)
+
+    try:
+        story = json.loads(raw)
+    except json.JSONDecodeError as error:
+        print("Gemini response:", raw[:3000])
+        raise RuntimeError(
+            f"Gemini returned invalid JSON: {error}"
         ) from error
 
     scenes = story.get("scenes", [])
 
     if len(scenes) != 6:
         raise RuntimeError(
-            f"Gemini generated {len(scenes)} scenes instead of 6."
+            f"Expected 6 scenes, received {len(scenes)}."
         )
 
     for scene in scenes:
         scene["narration"] = clean(scene.get("narration"))
         scene["visual_query"] = clean(scene.get("visual_query"))
+        scene["visual_description"] = clean(
+            scene.get("visual_description")
+        )
+        scene["mood"] = clean(scene.get("mood"))
 
         if not scene["narration"] or not scene["visual_query"]:
             raise RuntimeError(
@@ -285,18 +296,18 @@ Make sure every JSON string is properly closed.
 
     if not 100 <= word_count <= 160:
         raise RuntimeError(
-            f"Story length is {word_count} words. "
-            "Expected approximately 115–145."
+            f"Story contains {word_count} words."
         )
 
     print("Story generated successfully.")
+    print("Story title:", story["title"])
     print("Word count:", word_count)
 
     return story
 
 
 # ==========================================
-# STORY-MATCHED PIXABAY VIDEO SEARCH
+# PIXABAY - STORY MATCHED VIDEO FOOTAGE
 # ==========================================
 
 def find_video(query):
@@ -309,7 +320,7 @@ def find_video(query):
         params={
             "key": api_key,
             "q": query[:100],
-            "per_page": 10,
+            "per_page": 20,
             "safesearch": "true",
             "order": "popular"
         }
@@ -320,18 +331,55 @@ def find_video(query):
     if not hits:
         return None
 
+    # Prefer landscape or portrait clips with adequate resolution.
+    candidates = []
+
+    query_words = set(
+        re.findall(r"[a-z]+", query.lower())
+    )
+
     for hit in hits:
         videos = hit.get("videos", {})
         video = videos.get("medium", {})
 
-        if video.get("url"):
-            return {
-                "url": video["url"],
-                "page": hit.get("pageURL", ""),
-                "creator": hit.get("user", "Pixabay contributor")
-            }
+        if not video.get("url"):
+            continue
 
-    return None
+        tags = set(
+            re.findall(
+                r"[a-z]+",
+                str(hit.get("tags", "")).lower()
+            )
+        )
+
+        relevance = len(query_words.intersection(tags))
+
+        width = video.get("width", 0)
+        height = video.get("height", 0)
+
+        quality = min(width, height) / 1000
+
+        candidates.append((
+            relevance + quality,
+            hit,
+            video
+        ))
+
+    if not candidates:
+        return None
+
+    candidates.sort(
+        key=lambda item: item[0],
+        reverse=True
+    )
+
+    _, hit, video = candidates[0]
+
+    return {
+        "url": video["url"],
+        "page": hit.get("pageURL", ""),
+        "creator": hit.get("user", "Pixabay contributor")
+    }
 
 
 def download_video(url, destination):
@@ -347,7 +395,10 @@ def download_video(url, destination):
             if chunk:
                 file.write(chunk)
 
-    if not destination.exists() or destination.stat().st_size < 10000:
+    if (
+        not destination.exists()
+        or destination.stat().st_size < 10000
+    ):
         raise RuntimeError("Downloaded video is empty.")
 
     return destination
@@ -357,14 +408,14 @@ def get_scene_video(scene, index):
 
     query = scene["visual_query"]
 
-    print(f"Searching scene {index + 1}: {query}")
+    print(f"Searching cinematic scene {index + 1}: {query}")
 
     result = find_video(query)
 
     if not result:
         raise RuntimeError(
-            f"No matching Pixabay video found for: {query}. "
-            "Stopping instead of using unrelated footage."
+            f"No matching footage found for scene {index + 1}: "
+            f"{query}"
         )
 
     destination = MEDIA / f"scene_{index + 1}.mp4"
@@ -376,13 +427,13 @@ def get_scene_video(scene, index):
         f"- {result['page']}"
     )
 
-    print("Downloaded matching scene:", query)
+    print("Downloaded:", query)
 
     return destination
 
 
 # ==========================================
-# DEEP MALE VOICE + WORD TIMING
+# CINEMATIC DEEP MALE NARRATION
 # ==========================================
 
 async def generate_voice(text, audio_path):
@@ -400,7 +451,7 @@ async def generate_voice(text, audio_path):
             )
 
             audio_data = bytearray()
-            word_boundaries = []
+            boundaries = []
 
             async for event in communicator.stream():
 
@@ -408,7 +459,7 @@ async def generate_voice(text, audio_path):
                     audio_data.extend(event["data"])
 
                 elif event["type"] == "WordBoundary":
-                    word_boundaries.append({
+                    boundaries.append({
                         "text": event["text"],
                         "start": event["offset"] / 10000000,
                         "end": (
@@ -421,10 +472,9 @@ async def generate_voice(text, audio_path):
 
             audio_path.write_bytes(audio_data)
 
-            return word_boundaries
+            return boundaries
 
         except Exception as error:
-
             last_error = error
 
             if attempt == 4:
@@ -438,7 +488,7 @@ async def generate_voice(text, audio_path):
 
 
 # ==========================================
-# SYNCHRONIZED SUBTITLES
+# SUBTITLES - LOWER SCREEN POSITION
 # ==========================================
 
 def srt_timestamp(seconds):
@@ -455,11 +505,15 @@ def srt_timestamp(seconds):
     )
 
 
-def create_subtitles(boundaries, audio_duration, path, narration=""):
+def create_subtitles(
+    boundaries,
+    audio_duration,
+    path,
+    narration=""
+):
 
     groups = []
 
-    # Use actual word timings when Edge TTS provides them.
     if boundaries:
 
         for index in range(0, len(boundaries), 4):
@@ -478,20 +532,14 @@ def create_subtitles(boundaries, audio_duration, path, narration=""):
 
             groups.append((start, end, text))
 
-    # Fallback: estimate subtitle timings from narration.
     else:
 
-        print(
-            "Word timing unavailable. "
-            "Using automatic subtitle timing."
-        )
+        print("Using estimated subtitle timings.")
 
         words = clean(narration).split()
 
         if not words:
-            raise RuntimeError(
-                "No narration available for subtitles."
-            )
+            raise RuntimeError("No narration for subtitles.")
 
         chunks = [
             words[i:i + 4]
@@ -539,10 +587,15 @@ def create_subtitles(boundaries, audio_duration, path, narration=""):
 
 
 # ==========================================
-# RENDER EACH STORY SCENE
+# CINEMATIC SCENE RENDERING
 # ==========================================
 
-def render_scene(video_path, audio_path, subtitle_path, output_path):
+def render_scene(
+    video_path,
+    audio_path,
+    subtitle_path,
+    output_path
+):
 
     audio_duration = duration_of(audio_path)
 
@@ -551,27 +604,38 @@ def render_scene(video_path, audio_path, subtitle_path, output_path):
     subtitle_file = subtitle_file.replace(":", r"\:")
     subtitle_file = subtitle_file.replace("'", r"\'")
 
+    # Lower subtitles, above the bottom interface area.
     subtitle_filter = (
         f"subtitles='{subtitle_file}':"
-        "force_style='FontName=DejaVu Sans,"
-        "FontSize=19,"
+        "force_style='"
+        "FontName=DejaVu Sans,"
+        "FontSize=18,"
         "Bold=1,"
         "PrimaryColour=&H00FFFFFF,"
         "OutlineColour=&H00000000,"
-        "BorderStyle=1,"
-        "Outline=3,"
+        "BackColour=&H80000000,"
+        "BorderStyle=3,"
+        "Outline=2,"
         "Shadow=1,"
         "Alignment=2,"
-        "MarginV=250'"
+        "MarginV=190,"
+        "MarginL=70,"
+        "MarginR=70"
+        "'"
     )
 
+    # Portrait crop with subtle cinematic camera movement.
     video_filter = (
-        "scale=1080:1920:force_original_aspect_ratio=increase,"
-        "crop=1080:1920,"
+        "scale=1188:2112:force_original_aspect_ratio=increase,"
+        "crop=1080:1920:"
+        "x='(in_w-out_w)/2+12*sin(t*0.35)':"
+        "y='(in_h-out_h)/2',"
         "setsar=1,"
         "fps=30,"
-        "eq=contrast=1.08:saturation=0.85:brightness=-0.03,"
-        "fade=t=in:st=0:d=0.25,"
+        "eq=contrast=1.16:saturation=0.78:brightness=-0.045,"
+        "colorbalance=rs=-0.025:gs=-0.01:bs=0.025,"
+        "vignette=PI/5,"
+        "unsharp=5:5:0.45:5:5:0.0,"
         + subtitle_filter
     )
 
@@ -587,11 +651,11 @@ def render_scene(video_path, audio_path, subtitle_path, output_path):
         "-map", "1:a:0",
         "-c:v", "libx264",
         "-preset", "veryfast",
-        "-crf", "23",
+        "-crf", "21",
         "-pix_fmt", "yuv420p",
         "-r", "30",
         "-c:a", "aac",
-        "-b:a", "128k",
+        "-b:a", "160k",
         "-ar", "44100",
         "-shortest",
         str(output_path)
@@ -599,7 +663,7 @@ def render_scene(video_path, audio_path, subtitle_path, output_path):
 
 
 # ==========================================
-# BUILD COMPLETE SHORT
+# BUILD SIX-SCENE HORROR MOVIE
 # ==========================================
 
 def build_video(story):
@@ -608,7 +672,7 @@ def build_video(story):
 
     for index, scene in enumerate(story["scenes"]):
 
-        print(f"\nProcessing scene {index + 1}/6")
+        print(f"\nRendering movie scene {index + 1}/6")
 
         video_path = get_scene_video(scene, index)
 
@@ -641,27 +705,74 @@ def build_video(story):
 
         rendered_scenes.append(rendered_path)
 
-    list_path = MEDIA / "scenes.txt"
+    # Smooth video and audio transitions.
+    print("\nJoining scenes with cinematic transitions...")
 
-    with open(list_path, "w", encoding="utf-8") as file:
+    command = ["ffmpeg", "-y"]
 
-        for scene_path in rendered_scenes:
-            file.write(
-                f"file '{scene_path.resolve()}'\n"
-            )
+    for path in rendered_scenes:
+        command.extend(["-i", str(path)])
+
+    filter_parts = []
+
+    transition = TRANSITION_DURATION
+
+    current_video = "[0:v]"
+    current_audio = "[0:a]"
+
+    elapsed = duration_of(rendered_scenes[0])
+
+    for index in range(1, len(rendered_scenes)):
+
+        next_video = f"[{index}:v]"
+        next_audio = f"[{index}:a]"
+
+        output_video = f"[v{index}]"
+        output_audio = f"[a{index}]"
+
+        offset = max(0, elapsed - transition)
+
+        filter_parts.append(
+            f"{current_video}{next_video}"
+            f"xfade=transition=fade:"
+            f"duration={transition}:"
+            f"offset={offset:.3f}"
+            f"{output_video}"
+        )
+
+        filter_parts.append(
+            f"{current_audio}{next_audio}"
+            f"acrossfade=d={transition}:c1=tri:c2=tri"
+            f"{output_audio}"
+        )
+
+        elapsed += (
+            duration_of(rendered_scenes[index]) - transition
+        )
+
+        current_video = output_video
+        current_audio = output_audio
+
+    filter_complex = ";".join(filter_parts)
 
     final_video = OUTPUT / "midnight_files_short.mp4"
 
-    run([
-        "ffmpeg",
-        "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", str(list_path),
-        "-c", "copy",
+    command.extend([
+        "-filter_complex", filter_complex,
+        "-map", current_video,
+        "-map", current_audio,
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "21",
+        "-pix_fmt", "yuv420p",
+        "-r", "30",
+        "-c:a", "aac",
+        "-b:a", "160k",
         "-movflags", "+faststart",
         str(final_video)
     ])
+
+    run(command)
 
     return final_video
 
@@ -739,7 +850,7 @@ def upload_to_youtube(video_path, story):
         resumable=True
     )
 
-    request = youtube.videos().insert(
+    upload_request = youtube.videos().insert(
         part="snippet,status",
         body=body,
         media_body=media
@@ -749,12 +860,13 @@ def upload_to_youtube(video_path, story):
 
     while response is None:
 
-        status, response = request.next_chunk()
+        status, response = upload_request.next_chunk()
 
         if status:
             print(
-                f"Upload progress: "
-                f"{int(status.progress() * 100)}%"
+                "Upload progress:",
+                int(status.progress() * 100),
+                "%"
             )
 
     video_id = response["id"]
@@ -792,21 +904,27 @@ def main():
             + ", ".join(missing)
         )
 
-    print("MIDNIGHT FILES STARTED")
+    print("================================")
+    print("MIDNIGHT FILES CINEMATIC ENGINE")
+    print("================================")
 
-    print("\nGenerating horror story...")
+    print("\nVoice:", VOICE)
+    print("Generating horror screenplay...")
+
     story = generate_story()
 
     print("\nTITLE:", story["title"])
     print("\nSTORY:", story["narration"])
 
-    print("\nGenerating six matching video scenes...")
+    print("\nGenerating six cinematic scenes...")
+
     video = build_video(story)
 
     print("\nFinal video:", video)
     print("Duration:", duration_of(video), "seconds")
 
     print("\nUploading to YouTube...")
+
     upload_to_youtube(video, story)
 
     print("\nMIDNIGHT FILES COMPLETED SUCCESSFULLY")
