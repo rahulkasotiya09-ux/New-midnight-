@@ -88,11 +88,20 @@ def request_with_retry(method, url, **kwargs):
             )
 
             if response.status_code in (429, 500, 502, 503, 504):
-                last_error = response.text[:500]
+                last_error = (
+                    f"HTTP {response.status_code}: "
+                    f"{response.text[:2000]}"
+                )
+
                 time.sleep(10 * (attempt + 1))
                 continue
 
-            response.raise_for_status()
+            if not response.ok:
+                raise RuntimeError(
+                    f"API HTTP {response.status_code}: "
+                    f"{response.text[:2000]}"
+                )
+
             return response
 
         except requests.RequestException as error:
@@ -173,6 +182,8 @@ The six narration parts together must form the entire story.
         f"models/{GEMINI_MODEL}:generateContent"
     )
 
+    print("Using Gemini model:", GEMINI_MODEL)
+
     response = request_with_retry(
         "POST",
         url,
@@ -211,10 +222,13 @@ The six narration parts together must form the entire story.
         scene["visual_query"] = clean(scene.get("visual_query"))
 
         if not scene["narration"] or not scene["visual_query"]:
-            raise RuntimeError("A scene is missing required information.")
+            raise RuntimeError(
+                "A scene is missing required information."
+            )
 
     story["title"] = clean(story.get("title")) or "Midnight Files"
     story["description"] = clean(story.get("description"))
+
     story["tags"] = story.get(
         "tags",
         ["horror", "scary story", "shorts"]
@@ -262,8 +276,6 @@ def find_video(query):
 
     for hit in hits:
         videos = hit.get("videos", {})
-
-        # Medium is available for Pixabay video results.
         video = videos.get("medium", {})
 
         if video.get("url"):
@@ -404,10 +416,7 @@ def srt_timestamp(seconds):
 
 def create_subtitles(boundaries, audio_duration, path):
 
-    # Fallback timing if the TTS service provides no word metadata.
     if not boundaries:
-        words = " ".join([])
-
         raise RuntimeError(
             "TTS did not provide word timing information; "
             "refusing to create falsely synchronized captions."
@@ -554,8 +563,6 @@ def build_video(story):
 
         rendered_scenes.append(rendered_path)
 
-    # All six scenes use identical output dimensions and codecs.
-    # Concatenate them into one finished video.
     list_path = MEDIA / "scenes.txt"
 
     with open(list_path, "w", encoding="utf-8") as file:
