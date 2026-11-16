@@ -20,7 +20,6 @@ from googleapiclient.http import MediaFileUpload
 
 # ============================================================
 # MIDNIGHT FILES — AUTOMATED HORROR SHORTS
-# Free-tier services only. No still-image video fallback.
 # ============================================================
 
 BASE = Path("midnight_cache")
@@ -48,7 +47,7 @@ SESSION.headers.update({"User-Agent": "MidnightFiles/1.0"})
 
 
 # ============================================================
-# SETUP
+# DIRECTORY SETUP
 # ============================================================
 
 def setup_directories():
@@ -145,7 +144,7 @@ def request_retry(method, url, **kwargs):
 
 
 # ============================================================
-# STORY GENERATION
+# BUILT-IN STORY
 # ============================================================
 
 def fallback_story():
@@ -255,6 +254,10 @@ def fallback_story():
     }
 
 
+# ============================================================
+# STORY GENERATION
+# ============================================================
+
 def clean_json_text(text):
     text = text.strip()
     text = re.sub(r"^```(?:json)?", "", text)
@@ -310,7 +313,7 @@ Rules:
 - Exactly six scenes.
 - Approximately 100 to 130 narration words total.
 - Start with a powerful hook.
-- Chronological story, with clear continuity.
+- Chronological story with clear continuity.
 - Same main character, face, clothing and locations.
 - Every scene must logically follow the previous scene.
 - Each visual prompt describes one clear cinematic shot.
@@ -464,7 +467,7 @@ def generate_image(prompt, output_path):
 
 
 # ============================================================
-# HUGGING FACE WAN REAL VIDEO GENERATION
+# WAN VIDEO GENERATION — AUTHENTICATION FIXED
 # ============================================================
 
 def is_zero_gpu_quota_error(error):
@@ -499,6 +502,9 @@ def find_video_path(result):
             for item in value:
                 inspect(item)
 
+        elif hasattr(value, "path"):
+            inspect(value.path)
+
     inspect(result)
 
     for candidate in candidates:
@@ -522,9 +528,11 @@ def generate_wan_clip(image_path, motion_prompt, output_path):
     print(f"Connecting to Wan for {image_path.name}")
 
     try:
+        # Correct authentication argument: token
         client = Client(
             WAN_SPACE,
-            hf_token=token
+            token=token,
+            verbose=True
         )
 
         result = client.predict(
@@ -554,7 +562,7 @@ def generate_wan_clip(image_path, motion_prompt, output_path):
         ):
             raise RuntimeError("Wan video was not saved correctly")
 
-        print(f"Real video saved: {output_path}")
+        print(f"Real Wan video saved: {output_path}")
         return True
 
     except Exception as error:
@@ -609,7 +617,7 @@ def generate_voice(text, output_path):
 
 
 # ============================================================
-# SUBTITLES
+# SUBTITLE GENERATION
 # ============================================================
 
 def timestamp_ass(seconds):
@@ -692,7 +700,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 # ============================================================
-# RENDER EACH SCENE
+# RENDER SCENE
 # ============================================================
 
 def render_scene(
@@ -712,10 +720,8 @@ def render_scene(
 
     speed_factor = video_duration / audio_duration
 
-    subtitle_path = subtitle_path.resolve()
-
     subtitle_name = (
-        str(subtitle_path)
+        str(subtitle_path.resolve())
         .replace("\\", "/")
         .replace(":", r"\:")
     )
@@ -819,7 +825,7 @@ def build_video(story):
             f"\n========== SCENE {index}/{SCENE_COUNT} =========="
         )
 
-        # Generate or reuse image.
+        # Image generation or reuse.
         if not image_path.exists():
             print(f"Generating image for scene {index}")
 
@@ -830,7 +836,7 @@ def build_video(story):
         else:
             print(f"Using saved image: {image_path}")
 
-        # Generate or reuse real Wan video.
+        # Real video generation or reuse.
         if not clip_path.exists():
             print(f"Generating real Wan video for scene {index}")
 
@@ -852,14 +858,14 @@ def build_video(story):
         else:
             print(f"Using saved video: {clip_path}")
 
-        # Generate or reuse voice.
+        # Voice generation or reuse.
         if not audio_path.exists():
             generate_voice(
                 scene["narration"],
                 audio_path
             )
 
-        # Generate or reuse subtitles.
+        # Subtitle generation or reuse.
         if not subtitle_path.exists():
             duration = get_duration(audio_path)
 
@@ -869,7 +875,7 @@ def build_video(story):
                 subtitle_path
             )
 
-        # Render scene.
+        # Scene rendering.
         if not rendered_path.exists():
             render_scene(
                 index,
@@ -934,9 +940,7 @@ def upload_to_youtube(video_path, story):
     title = story.get(
         "title",
         "Midnight Files"
-    )
-
-    title = title[:95]
+    )[:95]
 
     description = (
         story.get(
@@ -991,7 +995,7 @@ def upload_to_youtube(video_path, story):
 
     video_id = response["id"]
 
-    # Save upload marker immediately after YouTube confirms.
+    # Save marker immediately after confirmed upload.
     UPLOADED_FILE.write_text(
         json.dumps(
             {
@@ -1017,7 +1021,7 @@ def upload_to_youtube(video_path, story):
 
 
 # ============================================================
-# START NEW CYCLE AFTER SUCCESSFUL UPLOAD
+# CLEAR PREVIOUS COMPLETED CYCLE
 # ============================================================
 
 def clear_previous_cycle():
@@ -1074,18 +1078,17 @@ def main():
             + ", ".join(missing)
         )
 
-    # Start a fresh cycle after a confirmed previous upload.
+    # Start new cycle only after confirmed previous upload.
     if UPLOADED_FILE.exists():
         clear_previous_cycle()
 
-    # Reuse story after interrupted runs.
+    # Resume existing story after interrupted run.
     story = load_story()
 
     if story:
         print("Resuming saved story.")
     else:
         print("Creating a new horror story.")
-
         story = generate_story()
         save_story(story)
 
@@ -1093,13 +1096,13 @@ def main():
 
     video_path = build_video(story)
 
-    # Quota exhausted or clips incomplete.
+    # If Wan quota runs out, do not upload.
     if video_path is None:
         print("Video generation paused.")
         print("No upload attempted.")
         return
 
-    # Verify all six genuine video clips before upload.
+    # Verify all six genuine video clips.
     for index in range(1, SCENE_COUNT + 1):
         clip = VIDEO_DIR / f"wan_scene_{index}.mp4"
 
