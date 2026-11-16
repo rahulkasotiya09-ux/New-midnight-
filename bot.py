@@ -42,9 +42,6 @@ FPS = 30
 
 TRANSITION_DURATION = 0.35
 
-# Same seed helps keep a consistent visual style.
-IMAGE_SEED = 82417
-
 
 # ==========================================
 # GENERAL HELPERS
@@ -386,8 +383,7 @@ IMPORTANT IMAGE RULES:
         },
         json={
             "prompt": prompt,
-            "steps": 4,
-            "seed": IMAGE_SEED
+            "steps": 4
         }
     )
 
@@ -665,10 +661,6 @@ def render_scene(
         "MarginR=70"
         "'"
     )
-
-    # Blurred background fills the portrait frame.
-    # Original image stays visible in the center.
-    # Slow zoom creates a cinematic camera movement.
 
     video_filter = (
         "[0:v]split=2[bgsrc][fgsrc];"
