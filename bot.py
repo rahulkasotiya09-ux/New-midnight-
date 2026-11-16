@@ -1,9 +1,12 @@
+
 import os
 import re
 import json
 import time
 import shutil
 import random
+import base64
+import asyncio
 import subprocess
 from pathlib import Path
 
@@ -16,14 +19,15 @@ from googleapiclient.http import MediaFileUpload
 
 
 # ============================================================
-# MIDNIGHT FILES — FREE AUTOMATED HORROR SHORTS
+# MIDNIGHT FILES — AUTOMATED HORROR SHORTS
+# Free-tier services only. No still-image video fallback.
 # ============================================================
 
 BASE = Path("midnight_cache")
 IMAGE_DIR = BASE / "images"
 VIDEO_DIR = BASE / "videos"
+MEDIA_DIR = Path("output/media")
 OUTPUT_DIR = Path("output")
-MEDIA_DIR = OUTPUT_DIR / "media"
 
 STORY_FILE = BASE / "story.json"
 UPLOADED_FILE = BASE / "uploaded.json"
@@ -31,8 +35,6 @@ FINAL_VIDEO = OUTPUT_DIR / "midnight_files.mp4"
 
 SCENE_COUNT = 6
 VIDEO_FPS = 16
-VIDEO_WIDTH = 720
-VIDEO_HEIGHT = 1280
 
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 WAN_SPACE = "zerogpu-aoti/wan2-2-fp8da-aoti-faster"
@@ -45,8 +47,18 @@ SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "MidnightFiles/1.0"})
 
 
+# ============================================================
+# SETUP
+# ============================================================
+
 def setup_directories():
-    for folder in [BASE, IMAGE_DIR, VIDEO_DIR, OUTPUT_DIR, MEDIA_DIR]:
+    for folder in [
+        BASE,
+        IMAGE_DIR,
+        VIDEO_DIR,
+        MEDIA_DIR,
+        OUTPUT_DIR
+    ]:
         folder.mkdir(parents=True, exist_ok=True)
 
 
@@ -69,6 +81,22 @@ def run_command(command):
     return result
 
 
+def get_duration(path):
+    result = run_command([
+        "ffprobe",
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(path)
+    ])
+
+    return float(result.stdout.strip())
+
+
+# ============================================================
+# HTTP RETRIES
+# ============================================================
+
 def request_retry(method, url, **kwargs):
     last_error = None
 
@@ -84,14 +112,21 @@ def request_retry(method, url, **kwargs):
             if response.status_code == 429:
                 body = response.text.lower()
 
-                if "per day" in body or "daily" in body or "quota" in body:
+                if (
+                    "per day" in body
+                    or "daily" in body
+                    or "quota" in body
+                ):
                     raise RuntimeError("GEMINI_DAILY_QUOTA")
 
             if response.status_code in [500, 502, 503, 504]:
                 last_error = (
-                    f"Temporary server error {response.status_code}: "
-                    f"{response.text[:1000]}"
+                    f"Temporary server error "
+                    f"{response.status_code}: "
+                    f"{response.text[:1500]}"
                 )
+
+                print(last_error)
                 time.sleep(min(10 * (attempt + 1), 40))
                 continue
 
@@ -103,6 +138,7 @@ def request_retry(method, url, **kwargs):
 
         except Exception as error:
             last_error = str(error)
+            print(f"Request attempt {attempt + 1}: {error}")
             time.sleep(min(8 * (attempt + 1), 30))
 
     raise RuntimeError(f"Request failed: {last_error}")
@@ -116,8 +152,8 @@ def fallback_story():
     return {
         "title": "The Room Behind the Wall",
         "description": (
-            "A terrifying late-night discovery reveals a room "
-            "that should never have existed."
+            "A terrifying late-night discovery reveals "
+            "a room that should never have existed."
         ),
         "scenes": [
             {
@@ -126,9 +162,9 @@ def fallback_story():
                     "someone knocked from inside my bedroom wall."
                 ),
                 "visual": (
-                    "A frightened young man alone in a small "
-                    "old apartment bedroom at night, staring "
-                    "toward a cracked bedroom wall, cinematic "
+                    "A frightened young man alone in an old "
+                    "apartment bedroom at night, staring toward "
+                    "a cracked bedroom wall, cinematic "
                     "photorealistic horror film, cold blue lighting"
                 ),
                 "motion": (
@@ -150,7 +186,7 @@ def fallback_story():
                 "motion": (
                     "The camera moves slowly from the man's face "
                     "toward the wall. Three small vibrations shake "
-                    "the picture frame."
+                    "a picture frame."
                 )
             },
             {
@@ -191,7 +227,8 @@ def fallback_story():
                 "visual": (
                     "Impossible second bedroom behind a hidden "
                     "door, identical bed, shadowy human figure "
-                    "lying beneath a blanket, unsettling photorealism"
+                    "lying beneath a blanket, unsettling "
+                    "photorealistic horror film"
                 ),
                 "motion": (
                     "The camera slowly moves through the doorway. "
@@ -231,8 +268,11 @@ def validate_story(story):
 
     scenes = story.get("scenes")
 
-    if not isinstance(scenes, list) or len(scenes) != SCENE_COUNT:
-        raise ValueError("Story must contain exactly six scenes")
+    if not isinstance(scenes, list):
+        raise ValueError("Story has no scenes list")
+
+    if len(scenes) != SCENE_COUNT:
+        raise ValueError("Story must have exactly six scenes")
 
     for scene in scenes:
         for key in ["narration", "visual", "motion"]:
@@ -246,13 +286,13 @@ def generate_story():
     api_key = os.getenv("GEMINI_API_KEY")
 
     if not api_key:
-        print("GEMINI_API_KEY missing. Using built-in story.")
+        print("Gemini key missing. Using built-in story.")
         return fallback_story()
 
     prompt = """
-Create an original, extremely engaging short horror film for YouTube Shorts.
+Create an original, extremely engaging horror short film.
 
-Return ONLY valid JSON in this exact structure:
+Return ONLY valid JSON in this structure:
 
 {
   "title": "short title",
@@ -268,21 +308,22 @@ Return ONLY valid JSON in this exact structure:
 
 Rules:
 - Exactly six scenes.
-- Total narration should be approximately 100 to 130 words.
-- The story must have a strong hook in the first sentence.
-- Every scene must continue the same story in chronological order.
-- Keep the same main character, clothes, face, and locations.
-- Each visual prompt must describe one clear cinematic shot.
-- Each motion prompt must describe physical movement and camera movement.
-- Avoid random unrelated scenes.
-- Make the ending disturbing and memorable.
-- Use realistic live-action horror film style.
-- No animation, illustration, cartoon, or Ghibli style.
-- Do not include markdown or text outside the JSON.
+- Approximately 100 to 130 narration words total.
+- Start with a powerful hook.
+- Chronological story, with clear continuity.
+- Same main character, face, clothing and locations.
+- Every scene must logically follow the previous scene.
+- Each visual prompt describes one clear cinematic shot.
+- Each motion prompt describes physical and camera movement.
+- Disturbing, memorable ending.
+- Realistic live-action horror film style.
+- No cartoons, illustrations or anime.
+- No markdown outside the JSON.
 """
 
     url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
+        "https://generativelanguage.googleapis.com/"
+        "v1beta/models/"
         + GEMINI_MODEL
         + ":generateContent"
     )
@@ -308,14 +349,18 @@ Rules:
         )
 
         data = response.json()
-        generated = data["candidates"][0]["content"]["parts"][0]["text"]
+
+        generated = (
+            data["candidates"][0]["content"]["parts"][0]["text"]
+        )
+
         story = json.loads(clean_json_text(generated))
         return validate_story(story)
 
     except Exception as error:
-        print("Gemini is temporarily unavailable or returned an error.")
+        print("Gemini unavailable or response invalid.")
         print(f"Reason: {error}")
-        print("Switching to built-in horror story.")
+        print("Using built-in horror story.")
         return fallback_story()
 
 
@@ -331,15 +376,18 @@ def load_story():
         return None
 
     try:
-        story = json.loads(STORY_FILE.read_text(encoding="utf-8"))
+        story = json.loads(
+            STORY_FILE.read_text(encoding="utf-8")
+        )
         return validate_story(story)
+
     except Exception as error:
         print(f"Saved story could not be loaded: {error}")
         return None
 
 
 # ============================================================
-# IMAGE GENERATION — CLOUDFLARE FLUX
+# CLOUDFLARE FLUX IMAGE GENERATION
 # ============================================================
 
 def generate_image(prompt, output_path):
@@ -351,7 +399,8 @@ def generate_image(prompt, output_path):
 
     url = (
         f"https://api.cloudflare.com/client/v4/accounts/"
-        f"{account_id}/ai/run/@cf/black-forest-labs/flux-1-schnell"
+        f"{account_id}/ai/run/"
+        "@cf/black-forest-labs/flux-1-schnell"
     )
 
     headers = {
@@ -361,9 +410,9 @@ def generate_image(prompt, output_path):
 
     full_prompt = (
         prompt
-        + ". Photorealistic live-action horror movie still, "
-        "vertical 9:16 composition, cinematic lighting, "
-        "realistic human proportions, detailed environment, "
+        + ". Photorealistic live-action horror movie scene, "
+        "cinematic lighting, realistic human proportions, "
+        "detailed environment, dramatic composition, "
         "no text, no watermark."
     )
 
@@ -371,45 +420,51 @@ def generate_image(prompt, output_path):
         url,
         headers=headers,
         json={
-            "prompt": full_prompt,
-            "width": VIDEO_WIDTH,
-            "height": VIDEO_HEIGHT,
-            "num_steps": 4
+            "prompt": full_prompt[:2048],
+            "steps": 4
         },
         timeout=180
     )
 
-    response.raise_for_status()
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Cloudflare image error {response.status_code}: "
+            f"{response.text[:3000]}"
+        )
 
-    content_type = response.headers.get("content-type", "")
-
-    if "application/json" in content_type:
+    try:
         result = response.json()
 
-        if "result" in result and "image" in result["result"]:
-            import base64
-            image_bytes = base64.b64decode(result["result"]["image"])
-        else:
+        if not result.get("success", True):
             raise RuntimeError(
-                "Cloudflare did not return an image: "
-                + str(result)[:1000]
+                f"Cloudflare returned errors: "
+                f"{result.get('errors', result)}"
             )
-    else:
-        image_bytes = response.content
 
-    if not image_bytes:
-        raise RuntimeError("Cloudflare returned an empty image")
+        image_data = result.get("result", {}).get("image")
 
-    output_path.write_bytes(image_bytes)
+        if not image_data:
+            raise RuntimeError(
+                "No image returned: " + str(result)[:2000]
+            )
 
-    if output_path.stat().st_size < 1000:
-        raise RuntimeError("Generated image file is too small")
+        image_bytes = base64.b64decode(image_data)
 
-    print(f"Image saved: {output_path}")
+        if len(image_bytes) < 1000:
+            raise RuntimeError("Generated image is too small")
+
+        output_path.write_bytes(image_bytes)
+
+        print(f"Image successfully saved: {output_path}")
+
+    except Exception as error:
+        raise RuntimeError(
+            f"Could not process Cloudflare image: {error}"
+        )
 
 
 # ============================================================
-# REAL VIDEO GENERATION — HUGGING FACE WAN
+# HUGGING FACE WAN REAL VIDEO GENERATION
 # ============================================================
 
 def is_zero_gpu_quota_error(error):
@@ -431,7 +486,9 @@ def find_video_path(result):
 
     def inspect(value):
         if isinstance(value, str):
-            if value.lower().endswith((".mp4", ".webm", ".mov")):
+            if value.lower().endswith(
+                (".mp4", ".webm", ".mov")
+            ):
                 candidates.append(value)
 
         elif isinstance(value, dict):
@@ -462,7 +519,7 @@ def generate_wan_clip(image_path, motion_prompt, output_path):
     if not token:
         raise RuntimeError("HF_TOKEN is missing")
 
-    print(f"Connecting to Wan: {image_path.name}")
+    print(f"Connecting to Wan for {image_path.name}")
 
     try:
         client = Client(
@@ -488,12 +545,16 @@ def generate_wan_clip(image_path, motion_prompt, output_path):
         )
 
         source_path = find_video_path(result)
+
         shutil.copy2(source_path, output_path)
 
-        if not output_path.exists() or output_path.stat().st_size < 1000:
+        if (
+            not output_path.exists()
+            or output_path.stat().st_size < 1000
+        ):
             raise RuntimeError("Wan video was not saved correctly")
 
-        print(f"Real video clip saved: {output_path}")
+        print(f"Real video saved: {output_path}")
         return True
 
     except Exception as error:
@@ -504,11 +565,13 @@ def generate_wan_clip(image_path, motion_prompt, output_path):
                 "WAN_ZERO_GPU_QUOTA: " + str(error)
             )
 
-        raise RuntimeError(f"WAN_GENERATION_FAILED: {error}")
+        raise RuntimeError(
+            f"WAN_GENERATION_FAILED: {error}"
+        )
 
 
 # ============================================================
-# NARRATION — EDGE TTS
+# VOICE GENERATION
 # ============================================================
 
 async def create_tts(text, output_path):
@@ -523,36 +586,31 @@ async def create_tts(text, output_path):
 
 
 def generate_voice(text, output_path):
-    import asyncio
-
     for attempt in range(3):
         try:
             asyncio.run(create_tts(text, output_path))
 
-            if output_path.exists() and output_path.stat().st_size > 1000:
+            if (
+                output_path.exists()
+                and output_path.stat().st_size > 1000
+            ):
+                print(f"Voice saved: {output_path}")
                 return
 
             raise RuntimeError("Voice file is empty")
 
         except Exception as error:
-            print(f"Voice generation attempt {attempt + 1}: {error}")
+            print(
+                f"Voice attempt {attempt + 1} failed: {error}"
+            )
             time.sleep(3)
 
     raise RuntimeError("Could not generate narration")
 
 
 # ============================================================
-# SUBTITLES — LOWER PART OF THE SCREEN
+# SUBTITLES
 # ============================================================
-
-def escape_ass(text):
-    return (
-        text.replace("\\", r"\\")
-        .replace("{", r"\{")
-        .replace("}", r"\}")
-        .replace("\n", " ")
-    )
-
 
 def timestamp_ass(seconds):
     hours = int(seconds // 3600)
@@ -566,24 +624,13 @@ def timestamp_ass(seconds):
     )
 
 
-def create_subtitles(audio_path, subtitle_path):
-    import wave
-
-    # Use FFmpeg to read the audio duration.
-    result = run_command([
-        "ffprobe",
-        "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        str(audio_path)
-    ])
-
-    duration = float(result.stdout.strip())
-
-    # Split narration into short readable groups.
-    # Approximate word timing is distributed across the audio.
-    # This avoids placing subtitles at the top of the video.
-    return duration
+def escape_ass(text):
+    return (
+        text.replace("\\", r"\\")
+        .replace("{", r"\{")
+        .replace("}", r"\}")
+        .replace("\n", " ")
+    )
 
 
 def write_ass_subtitles(narration, duration, output_path):
@@ -593,13 +640,11 @@ def write_ass_subtitles(narration, duration, output_path):
         raise RuntimeError("Narration has no words")
 
     groups = []
-    group_size = 4
 
-    for index in range(0, len(words), group_size):
-        groups.append(" ".join(words[index:index + group_size]))
+    for index in range(0, len(words), 4):
+        groups.append(words[index:index + 4])
 
-    # Approximate each subtitle's duration according to word count.
-    total_words = max(len(words), 1)
+    total_words = len(words)
     current_time = 0.0
 
     header = """[Script Info]
@@ -621,11 +666,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     events = []
 
     for group in groups:
-        count = len(group.split())
+        count = len(group)
         group_duration = duration * count / total_words
 
         start = current_time
         end = min(duration, current_time + group_duration)
+
+        text = escape_ass(" ".join(group))
 
         events.append(
             "Dialogue: 0,"
@@ -633,7 +680,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             + ","
             + timestamp_ass(end)
             + ",Default,,0,0,0,,"
-            + escape_ass(group)
+            + text
         )
 
         current_time = end
@@ -645,39 +692,32 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 # ============================================================
-# VIDEO RENDERING
+# RENDER EACH SCENE
 # ============================================================
 
-def render_scene(index, clip_path, audio_path, subtitle_path, output_path):
-    audio_probe = run_command([
-        "ffprobe",
-        "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        str(audio_path)
-    ])
+def render_scene(
+    index,
+    clip_path,
+    audio_path,
+    subtitle_path,
+    output_path
+):
+    audio_duration = get_duration(audio_path)
+    video_duration = get_duration(clip_path)
 
-    video_probe = run_command([
-        "ffprobe",
-        "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        str(clip_path)
-    ])
+    if video_duration <= 0 or audio_duration <= 0:
+        raise RuntimeError(
+            f"Scene {index} has invalid duration"
+        )
 
-    audio_duration = float(audio_probe.stdout.strip())
-    video_duration = float(video_probe.stdout.strip())
-
-    if video_duration <= 0:
-        raise RuntimeError(f"Scene {index} has invalid video duration")
-
-    # Stretch the genuine Wan clip to match the narration.
-    # This does not replace the clip with a still image.
     speed_factor = video_duration / audio_duration
 
-    subtitle_filter = (
-        "subtitles="
-        + str(subtitle_path.resolve()).replace("\\", "/").replace(":", r"\:")
+    subtitle_path = subtitle_path.resolve()
+
+    subtitle_name = (
+        str(subtitle_path)
+        .replace("\\", "/")
+        .replace(":", r"\:")
     )
 
     video_filter = (
@@ -685,7 +725,7 @@ def render_scene(index, clip_path, audio_path, subtitle_path, output_path):
         "crop=720:1280,"
         "setsar=1,"
         f"setpts=PTS/{speed_factor},"
-        + subtitle_filter
+        f"subtitles='{subtitle_name}'"
     )
 
     run_command([
@@ -710,13 +750,21 @@ def render_scene(index, clip_path, audio_path, subtitle_path, output_path):
     print(f"Rendered scene {index}")
 
 
+# ============================================================
+# JOIN ALL SCENES
+# ============================================================
+
 def join_scenes(scene_files):
     concat_file = OUTPUT_DIR / "concat.txt"
 
     lines = []
 
     for scene in scene_files:
-        escaped = str(scene.resolve()).replace("'", "'\\''")
+        escaped = (
+            str(scene.resolve())
+            .replace("'", "'\\''")
+        )
+
         lines.append(f"file '{escaped}'")
 
     concat_file.write_text(
@@ -740,37 +788,49 @@ def join_scenes(scene_files):
         str(FINAL_VIDEO)
     ])
 
-    if not FINAL_VIDEO.exists() or FINAL_VIDEO.stat().st_size < 10000:
+    if (
+        not FINAL_VIDEO.exists()
+        or FINAL_VIDEO.stat().st_size < 10000
+    ):
         raise RuntimeError("Final video was not created")
 
     print(f"Final video ready: {FINAL_VIDEO}")
 
 
 # ============================================================
-# RESUMABLE VIDEO BUILD
+# BUILD VIDEO — RESUME SAVED PROGRESS
 # ============================================================
 
 def build_video(story):
     scene_files = []
 
-    for index, scene in enumerate(story["scenes"], start=1):
-        image_path = IMAGE_DIR / f"scene_{index}.png"
+    for index, scene in enumerate(
+        story["scenes"],
+        start=1
+    ):
+        image_path = IMAGE_DIR / f"scene_{index}.jpg"
         clip_path = VIDEO_DIR / f"wan_scene_{index}.mp4"
 
         audio_path = MEDIA_DIR / f"voice_{index}.mp3"
         subtitle_path = MEDIA_DIR / f"scene_{index}.ass"
         rendered_path = MEDIA_DIR / f"rendered_{index}.mp4"
 
-        print(f"\n========== SCENE {index}/{SCENE_COUNT} ==========")
+        print(
+            f"\n========== SCENE {index}/{SCENE_COUNT} =========="
+        )
 
-        # Reuse image if it has already been generated.
+        # Generate or reuse image.
         if not image_path.exists():
             print(f"Generating image for scene {index}")
-            generate_image(scene["visual"], image_path)
+
+            generate_image(
+                scene["visual"],
+                image_path
+            )
         else:
             print(f"Using saved image: {image_path}")
 
-        # Reuse real Wan clip if already generated.
+        # Generate or reuse real Wan video.
         if not clip_path.exists():
             print(f"Generating real Wan video for scene {index}")
 
@@ -783,27 +843,33 @@ def build_video(story):
 
             except RuntimeError as error:
                 if is_zero_gpu_quota_error(error):
-                    print("\nHugging Face free video quota reached.")
-                    print("Saving progress for the next scheduled run.")
+                    print("Hugging Face free video quota reached.")
+                    print("Progress will be saved for the next run.")
                     return None
 
                 raise
 
         else:
-            print(f"Using saved Wan video: {clip_path}")
+            print(f"Using saved video: {clip_path}")
 
-        # Narration and subtitles can be recreated cheaply.
+        # Generate or reuse voice.
         if not audio_path.exists():
-            generate_voice(scene["narration"], audio_path)
+            generate_voice(
+                scene["narration"],
+                audio_path
+            )
 
+        # Generate or reuse subtitles.
         if not subtitle_path.exists():
-            duration = create_subtitles(audio_path, subtitle_path)
+            duration = get_duration(audio_path)
+
             write_ass_subtitles(
                 scene["narration"],
                 duration,
                 subtitle_path
             )
 
+        # Render scene.
         if not rendered_path.exists():
             render_scene(
                 index,
@@ -824,7 +890,7 @@ def build_video(story):
 
 
 # ============================================================
-# YOUTUBE UPLOAD
+# YOUTUBE AUTHENTICATION
 # ============================================================
 
 def youtube_service():
@@ -832,7 +898,11 @@ def youtube_service():
     client_id = os.getenv("YOUTUBE_CLIENT_ID")
     client_secret = os.getenv("YOUTUBE_CLIENT_SECRET")
 
-    if not all([refresh_token, client_id, client_secret]):
+    if not all([
+        refresh_token,
+        client_id,
+        client_secret
+    ]):
         raise RuntimeError("YouTube OAuth secrets are missing")
 
     credentials = Credentials(
@@ -841,7 +911,9 @@ def youtube_service():
         token_uri="https://oauth2.googleapis.com/token",
         client_id=client_id,
         client_secret=client_secret,
-        scopes=["https://www.googleapis.com/auth/youtube.upload"]
+        scopes=[
+            "https://www.googleapis.com/auth/youtube.upload"
+        ]
     )
 
     return build(
@@ -852,16 +924,25 @@ def youtube_service():
     )
 
 
+# ============================================================
+# YOUTUBE UPLOAD
+# ============================================================
+
 def upload_to_youtube(video_path, story):
     youtube = youtube_service()
 
-    title = story.get("title", "Midnight Files")
+    title = story.get(
+        "title",
+        "Midnight Files"
+    )
 
-    if len(title) > 95:
-        title = title[:95]
+    title = title[:95]
 
     description = (
-        story.get("description", "A horror story from Midnight Files.")
+        story.get(
+            "description",
+            "A horror story from Midnight Files."
+        )
         + "\n\n"
         + "#horror #scarystories #shorts #midnightfiles"
     )
@@ -903,48 +984,62 @@ def upload_to_youtube(video_path, story):
         status, response = request.next_chunk()
 
         if status:
-            print(f"YouTube upload: {int(status.progress() * 100)}%")
+            print(
+                "YouTube upload: "
+                f"{int(status.progress() * 100)}%"
+            )
 
     video_id = response["id"]
 
-    # Write the marker immediately after YouTube confirms the upload.
+    # Save upload marker immediately after YouTube confirms.
     UPLOADED_FILE.write_text(
-        json.dumps({
-            "video_id": video_id,
-            "title": title,
-            "uploaded_at": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
-        }, indent=2),
+        json.dumps(
+            {
+                "video_id": video_id,
+                "title": title,
+                "uploaded_at": time.strftime(
+                    "%Y-%m-%d %H:%M:%S UTC",
+                    time.gmtime()
+                )
+            },
+            indent=2
+        ),
         encoding="utf-8"
     )
 
     print("YouTube upload successful.")
     print(f"Video ID: {video_id}")
-    print(f"https://www.youtube.com/shorts/{video_id}")
+    print(
+        f"https://www.youtube.com/shorts/{video_id}"
+    )
 
     return video_id
 
 
 # ============================================================
-# START A FRESH CYCLE AFTER A SUCCESSFUL UPLOAD
+# START NEW CYCLE AFTER SUCCESSFUL UPLOAD
 # ============================================================
 
 def clear_previous_cycle():
     print("Previous upload found. Starting a new story cycle.")
 
-    for folder in [IMAGE_DIR, VIDEO_DIR, MEDIA_DIR]:
+    for folder in [
+        IMAGE_DIR,
+        VIDEO_DIR,
+        MEDIA_DIR
+    ]:
         if folder.exists():
             shutil.rmtree(folder)
 
         folder.mkdir(parents=True, exist_ok=True)
 
-    if STORY_FILE.exists():
-        STORY_FILE.unlink()
-
-    if UPLOADED_FILE.exists():
-        UPLOADED_FILE.unlink()
-
-    if FINAL_VIDEO.exists():
-        FINAL_VIDEO.unlink()
+    for file_path in [
+        STORY_FILE,
+        UPLOADED_FILE,
+        FINAL_VIDEO
+    ]:
+        if file_path.exists():
+            file_path.unlink()
 
 
 # ============================================================
@@ -968,7 +1063,8 @@ def main():
     ]
 
     missing = [
-        name for name in required
+        name
+        for name in required
         if not os.getenv(name)
     ]
 
@@ -978,18 +1074,18 @@ def main():
             + ", ".join(missing)
         )
 
-    # If the previous run uploaded successfully,
-    # clear the previous project and begin a new story.
+    # Start a fresh cycle after a confirmed previous upload.
     if UPLOADED_FILE.exists():
         clear_previous_cycle()
 
-    # Reuse the same story after an interrupted run.
+    # Reuse story after interrupted runs.
     story = load_story()
 
     if story:
         print("Resuming saved story.")
     else:
         print("Creating a new horror story.")
+
         story = generate_story()
         save_story(story)
 
@@ -997,20 +1093,22 @@ def main():
 
     video_path = build_video(story)
 
-    # If Wan quota runs out, exit without uploading.
-    # Workflow must commit midnight_cache for the next run.
+    # Quota exhausted or clips incomplete.
     if video_path is None:
-        print("\nProgress saved by the GitHub Actions workflow.")
-        print("Run again later to continue missing video scenes.")
+        print("Video generation paused.")
+        print("No upload attempted.")
         return
 
-    # Do not upload unless all six real video scenes exist.
+    # Verify all six genuine video clips before upload.
     for index in range(1, SCENE_COUNT + 1):
         clip = VIDEO_DIR / f"wan_scene_{index}.mp4"
 
-        if not clip.exists() or clip.stat().st_size < 1000:
+        if (
+            not clip.exists()
+            or clip.stat().st_size < 1000
+        ):
             raise RuntimeError(
-                f"Scene {index} is missing a valid real video clip. "
+                f"Scene {index} has no valid real video. "
                 "Upload cancelled."
             )
 
