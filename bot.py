@@ -814,7 +814,7 @@ def create_subtitles(boundaries, audio_duration, path, narration=""):
 
 # ==========================================
 # RENDER VIDEO + NARRATION + SUBTITLES
-# FIX: NO MORE REPEATING SCENES
+# NO REPEATED SCENES
 # ==========================================
 
 def render_scene(
@@ -829,8 +829,7 @@ def render_scene(
     if video_duration <= 0:
         raise RuntimeError("Generated scene video has invalid duration.")
 
-    # Never repeat/loop the same AI scene to fill the narration.
-    # Stretch this one continuous take to match its voice segment.
+    # One continuous take only. Never loop the source clip.
     stretch_factor = audio_duration / video_duration
 
     print(
@@ -898,12 +897,74 @@ def render_scene(
 
 
 # ==========================================
+# FREE ANIMATED IMAGE FALLBACK
+# ==========================================
+
+def create_motion_fallback(image_path, duration, index):
+    """
+    Free fallback when Hugging Face ZeroGPU quota is exhausted.
+    Creates a unique moving cinematic shot from this scene's own image.
+    Uses a slow camera push-in, not a repeated video clip.
+    """
+
+    output_path = MEDIA / f"fallback_scene_{index + 1}.mp4"
+
+    print(
+        f"Wan unavailable: creating animated image fallback "
+        f"for scene {index + 1} ({duration:.2f}s)."
+    )
+
+    frames = max(1, int(duration * FPS))
+
+    video_filter = (
+        "scale=1080:1920:force_original_aspect_ratio=increase,"
+        "crop=1080:1920,"
+        "zoompan="
+        "z='min(zoom+0.00025,1.08)':"
+        "x='iw/2-(iw/zoom/2)':"
+        "y='ih/2-(ih/zoom/2)':"
+        f"d=1:s=1080x1920:fps={FPS},"
+        "setsar=1,"
+        "eq=contrast=1.12:saturation=0.78:brightness=-0.035,"
+        "vignette=PI/5"
+    )
+
+    run([
+        "ffmpeg",
+        "-y",
+        "-loop", "1",
+        "-framerate", str(FPS),
+        "-i", str(image_path),
+        "-vf", video_filter,
+        "-frames:v", str(frames),
+        "-an",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-pix_fmt", "yuv420p",
+        "-r", str(FPS),
+        str(output_path)
+    ])
+
+    if not output_path.exists() or output_path.stat().st_size < 10000:
+        raise RuntimeError("Could not create animated fallback scene.")
+
+    print("Animated fallback scene saved:", output_path.name)
+
+    return output_path
+
+
+# ==========================================
 # BUILD SIX-SCENE HORROR SHORT
 # ==========================================
 
 def build_video(story):
     client = create_wan_client()
+
     rendered_scenes = []
+
+    # Once free ZeroGPU is exhausted, don't call Wan again this run.
+    wan_quota_exhausted = False
 
     for index, scene in enumerate(story["scenes"]):
         print(f"\n========== SCENE {index + 1}/6 ==========")
@@ -912,19 +973,59 @@ def build_video(story):
             story, scene, index
         )
 
-        video_path = generate_video_clip(
-            client, story, scene, image_path, index
-        )
-
         audio_path = MEDIA / f"voice_{index + 1}.mp3"
         subtitle_path = MEDIA / f"captions_{index + 1}.srt"
         rendered_path = MEDIA / f"rendered_{index + 1}.mp4"
 
+        # Generate voice first so fallback video can match its duration.
         boundaries = asyncio.run(
             generate_voice(scene["narration"], audio_path)
         )
 
         audio_duration = duration_of(audio_path)
+
+        video_path = None
+
+        if not wan_quota_exhausted:
+            try:
+                video_path = generate_video_clip(
+                    client, story, scene, image_path, index
+                )
+
+            except RuntimeError as error:
+                error_text = str(error).lower()
+
+                quota_error = (
+                    "zerogpu" in error_text
+                    and (
+                        "exceeded" in error_text
+                        or "limit" in error_text
+                        or "quota" in error_text
+                    )
+                )
+
+                if not quota_error:
+                    raise
+
+                print("\nHugging Face free ZeroGPU limit reached.")
+                print(
+                    "Switching this scene and all remaining scenes "
+                    "to the free animated-image fallback."
+                )
+
+                wan_quota_exhausted = True
+
+        if wan_quota_exhausted:
+            video_path = create_motion_fallback(
+                image_path,
+                audio_duration,
+                index
+            )
+
+        if video_path is None:
+            raise RuntimeError(
+                f"No video was created for scene {index + 1}."
+            )
 
         create_subtitles(
             boundaries,
