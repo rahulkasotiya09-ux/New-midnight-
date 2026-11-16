@@ -1,7 +1,6 @@
-
 requests
 edge-tts
 google-auth
 google-api-python-client
-gradio_client
+gradio_client>=1.0.0
 huggingface_hub
