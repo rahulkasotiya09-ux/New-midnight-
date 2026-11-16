@@ -11,7 +11,7 @@ from pathlib import Path
 
 import requests
 import edge_tts
-from gradio_client import Client
+from gradio_client import Client, handle_file
 
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -35,7 +35,6 @@ CLOUDFLARE_MODEL = "@cf/black-forest-labs/flux-1-schnell"
 
 WAN_SPACE = "zerogpu-aoti/wan2-2-fp8da-aoti-faster"
 
-# Reduced settings to lower GPU usage
 WAN_STEPS = 4
 WAN_DURATION = 2.0
 
@@ -392,8 +391,6 @@ def generate_video_clip(client, story, scene, image_path, index):
     character = story.get("character_description", "")
     visual_style = story.get("visual_style", "")
 
-    motion = scene.get("motion_description", "")
-
     prompt = f"""
 Create a continuous cinematic live-action horror movie shot.
 
@@ -407,7 +404,7 @@ SCENE ACTION:
 {scene["visual_description"]}
 
 MOVEMENT:
-{motion}
+{scene.get("motion_description", "")}
 
 NARRATIVE CONTEXT:
 {scene["narration"]}
@@ -437,29 +434,33 @@ Photorealistic movie footage.
         f"\nGenerating REAL Wan 2.2 video "
         f"{index + 1}/6..."
     )
+    print("Uploading image with handle_file...")
     print("Requested duration:", WAN_DURATION, "seconds")
     print("Inference steps:", WAN_STEPS)
 
     try:
         result = client.predict(
-            str(image_path),
-            prompt,
-            WAN_STEPS,
-            negative_prompt,
-            WAN_DURATION,
-            1,
-            1,
-            42 + index,
-            True,
+            input_image=handle_file(str(image_path)),
+            prompt=prompt,
+            steps=WAN_STEPS,
+            negative_prompt=negative_prompt,
+            duration_seconds=WAN_DURATION,
+            guidance_scale=1,
+            guidance_scale_2=1,
+            seed=42 + index,
+            randomize_seed=False,
             api_name="/generate_video"
         )
+
     except Exception as error:
         raise RuntimeError(
-            f"Wan 2.2 generation failed on scene {index + 1}: "
-            f"{error}"
-        )
+            f"Wan generation failed on scene {index + 1}: "
+            f"{type(error).__name__}: {error}"
+        ) from error
 
-    generated_video = result[0] if isinstance(result, tuple) else result
+    generated_video = (
+        result[0] if isinstance(result, tuple) else result
+    )
 
     if isinstance(generated_video, dict):
         generated_video = (
@@ -662,7 +663,6 @@ def render_scene(
         + subtitle_filter
     )
 
-    # Loop the generated motion clip to cover its narration.
     run([
         "ffmpeg",
         "-y",
