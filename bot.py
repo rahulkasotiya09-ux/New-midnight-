@@ -751,8 +751,10 @@ def srt_timestamp(seconds):
     seconds, milliseconds = divmod(milliseconds, 1000)
 
     return (
-        f"{hours:02}:{minutes:02}:"
-        f"{seconds:02},{milliseconds:03}"
+        f"{hours:02}:"
+        f"{minutes:02}:"
+        f"{seconds:02},"
+        f"{milliseconds:03}"
     )
 
 
@@ -812,6 +814,7 @@ def create_subtitles(boundaries, audio_duration, path, narration=""):
 
 # ==========================================
 # RENDER VIDEO + NARRATION + SUBTITLES
+# FIX: NO MORE REPEATING SCENES
 # ==========================================
 
 def render_scene(
@@ -821,6 +824,20 @@ def render_scene(
     output_path
 ):
     audio_duration = duration_of(audio_path)
+    video_duration = duration_of(video_path)
+
+    if video_duration <= 0:
+        raise RuntimeError("Generated scene video has invalid duration.")
+
+    # Never repeat/loop the same AI scene to fill the narration.
+    # Stretch this one continuous take to match its voice segment.
+    stretch_factor = audio_duration / video_duration
+
+    print(
+        f"Scene timing: AI clip {video_duration:.2f}s -> "
+        f"voice {audio_duration:.2f}s "
+        f"(single take, stretch x{stretch_factor:.2f})"
+    )
 
     subtitle_file = str(subtitle_path.resolve())
     subtitle_file = subtitle_file.replace("\\", "/")
@@ -847,6 +864,7 @@ def render_scene(
     )
 
     video_filter = (
+        f"setpts={stretch_factor:.6f}*PTS,"
         "scale=1080:1920:force_original_aspect_ratio=increase,"
         "crop=1080:1920,"
         "setsar=1,"
@@ -860,7 +878,6 @@ def render_scene(
     run([
         "ffmpeg",
         "-y",
-        "-stream_loop", "-1",
         "-i", str(video_path),
         "-i", str(audio_path),
         "-vf", video_filter,
