@@ -1,0 +1,36 @@
+{
+  "title": "The Room Behind the Wall",
+  "description": "A terrifying late-night discovery reveals a room that should never have existed.",
+  "scenes": [
+    {
+      "narration": "At three seventeen in the morning, someone knocked from inside my bedroom wall.",
+      "visual": "A frightened young man alone in a small old apartment bedroom at night, staring toward a cracked bedroom wall, cinematic photorealistic horror film, cold blue lighting",
+      "motion": "Slow cinematic camera push toward the man. He slowly turns his head toward the wall. A faint shadow moves behind him."
+    },
+    {
+      "narration": "I thought it was the neighbours, until the knocking came from directly behind my bed.",
+      "visual": "Old apartment bedroom, wooden bed pushed against a damaged plaster wall, frightened man sitting on bed, realistic cinematic horror",
+      "motion": "The camera moves slowly from the man's face toward the wall. Three small vibrations shake the picture frame."
+    },
+    {
+      "narration": "Then a voice whispered my name, from the other side.",
+      "visual": "Close view of a cracked bedroom wall, dark narrow crack in plaster, terrified man listening, realistic horror cinematography",
+      "motion": "The crack slowly spreads across the plaster. The camera creeps closer as dust falls."
+    },
+    {
+      "narration": "I pulled the wardrobe away and found a small wooden door.",
+      "visual": "A heavy wardrobe moved aside revealing a tiny old wooden door hidden inside the bedroom wall, dark apartment, cinematic horror",
+      "motion": "The wardrobe slowly scrapes across the floor. The camera reveals the hidden door behind it."
+    },
+    {
+      "narration": "Behind it was another bedroom, and someone was sleeping in my bed.",
+      "visual": "Impossible second bedroom behind a hidden door, identical bed, shadowy human figure lying beneath a blanket, unsettling photorealism",
+      "motion": "The camera slowly moves through the doorway. The covered figure begins to sit up."
+    },
+    {
+      "narration": "Then I heard my own voice behind me say, you were not supposed to open that door.",
+      "visual": "Terrifying dark bedroom doorway, a pale shadowy double of the man standing behind him, dramatic low-key lighting, cinematic horror",
+      "motion": "The camera slowly turns toward the second figure. The figure takes one slow step forward as the lights flicker."
+    }
+  ]
+}
