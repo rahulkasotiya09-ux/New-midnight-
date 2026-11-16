@@ -3,3 +3,5 @@ requests
 edge-tts
 google-auth
 google-api-python-client
+gradio_client
+huggingface_hub
