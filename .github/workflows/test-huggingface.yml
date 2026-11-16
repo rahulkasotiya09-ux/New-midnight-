@@ -1,0 +1,52 @@
+
+name: Test Hugging Face GPU Connection
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Gradio client
+        run: pip install --upgrade gradio_client
+
+      - name: Test Hugging Face and Wan Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          from gradio_client import Client
+
+          token = os.environ.get("HF_TOKEN", "").strip()
+
+          if not token:
+              raise SystemExit("HF_TOKEN secret is missing")
+
+          user = HfApi().whoami(token=token)
+          print("Hugging Face login: SUCCESS")
+          print("Account:", user.get("name"))
+
+          client = Client(
+              "zerogpu-aoti/wan2-2-fp8da-aoti-faster",
+              hf_token=token,
+              verbose=False
+          )
+
+          print("Wan 2.2 connection: SUCCESS")
+          client.view_api()
+          print("API inspection: SUCCESS")
+          print("No video generated. GPU quota untouched.")
+          PY
