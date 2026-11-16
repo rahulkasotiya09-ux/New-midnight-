@@ -34,8 +34,10 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 CLOUDFLARE_MODEL = "@cf/black-forest-labs/flux-1-schnell"
 
 WAN_SPACE = "zerogpu-aoti/wan2-2-fp8da-aoti-faster"
-WAN_STEPS = 6
-WAN_DURATION = 3.5
+
+# Reduced settings to lower GPU usage
+WAN_STEPS = 4
+WAN_DURATION = 2.0
 
 VOICE = os.getenv("TTS_VOICE", "en-US-ChristopherNeural")
 VOICE_RATE = "-8%"
@@ -436,6 +438,7 @@ Photorealistic movie footage.
         f"{index + 1}/6..."
     )
     print("Requested duration:", WAN_DURATION, "seconds")
+    print("Inference steps:", WAN_STEPS)
 
     try:
         result = client.predict(
@@ -659,8 +662,7 @@ def render_scene(
         + subtitle_filter
     )
 
-    # Loop the short generated motion clip to cover its narration.
-    # This preserves moving footage rather than replacing it with a still.
+    # Loop the generated motion clip to cover its narration.
     run([
         "ffmpeg",
         "-y",
@@ -922,6 +924,8 @@ def main():
     print("Voice:", VOICE)
     print("Image model:", CLOUDFLARE_MODEL)
     print("Video model:", WAN_SPACE)
+    print("Wan steps:", WAN_STEPS)
+    print("Wan duration:", WAN_DURATION)
 
     print("\nGenerating horror screenplay...")
 
