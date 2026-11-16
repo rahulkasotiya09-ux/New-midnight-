@@ -93,7 +93,27 @@ def request_with_retry(method, url, **kwargs):
                 **kwargs
             )
 
-            if response.status_code in (429, 500, 502, 503, 504):
+            if response.status_code == 429:
+                error_text = response.text[:2000]
+
+                if (
+                    "generate_content_free_tier_requests" in error_text
+                    or "RequestsPerDay" in error_text
+                    or "per day limit exceeded" in error_text.lower()
+                ):
+                    raise RuntimeError(
+                        "GEMINI_DAILY_QUOTA: " + error_text
+                    )
+
+                last_error = f"HTTP 429: {error_text}"
+
+                if attempt == 4:
+                    break
+
+                time.sleep(10 * (attempt + 1))
+                continue
+
+            if response.status_code in (500, 502, 503, 504):
                 last_error = (
                     f"HTTP {response.status_code}: "
                     f"{response.text[:1500]}"
@@ -121,11 +141,171 @@ def request_with_retry(method, url, **kwargs):
 
 
 # ==========================================
+# BUILT-IN FREE HORROR STORY FALLBACK
+# ==========================================
+
+def fallback_story():
+    print("\nGemini quota unavailable.")
+    print("Switching to built-in original horror story.")
+
+    narrations = [
+        (
+            "At 2:13 a.m., Mara heard three slow knocks coming "
+            "from inside her bedroom wall. Her apartment was silent, "
+            "and that wall faced the outside."
+        ),
+        (
+            "She pressed her ear against the cold plaster. "
+            "A little girl's voice whispered, 'Please don't let him "
+            "hear you.' Mara froze, barely breathing."
+        ),
+        (
+            "A thin crack appeared in the wallpaper, slowly tracing "
+            "a narrow door. Mara stepped backward, watching the "
+            "impossible outline grow across the wall."
+        ),
+        (
+            "From behind it came Mara's own voice, calmly asking, "
+            "'Why are you standing outside?' She had not spoken "
+            "a word all night."
+        ),
+        (
+            "The handle began turning. Mara ran into the hallway, "
+            "but every door opened onto that same dark bedroom. "
+            "Her apartment had become a loop."
+        ),
+        (
+            "Her phone lit up. Her mother texted, 'Don't open the wall. "
+            "We sealed it after you disappeared.' Three knocks sounded "
+            "again, inside her phone."
+        )
+    ]
+
+    visuals = [
+        (
+            "Mara, a 27-year-old woman with shoulder-length dark hair "
+            "and a grey sweater, sits upright in a dark bedroom staring "
+            "at a blank wall. A digital clock reads 2:13 AM."
+        ),
+        (
+            "Mara presses her ear against the plaster wall, her "
+            "frightened eyes widening in the cold blue bedroom light."
+        ),
+        (
+            "A crack spreads through the wallpaper, forming the outline "
+            "of a narrow door. Mara steps backward in fear."
+        ),
+        (
+            "A strange door handle appears in the wall. Mara stares "
+            "at it while her reflection looks subtly different "
+            "in a nearby mirror."
+        ),
+        (
+            "Mara runs through a dark apartment hallway and opens "
+            "a door, only to find the same bedroom again."
+        ),
+        (
+            "Close-up of a phone displaying the mother's warning "
+            "message. Mara freezes as the bedroom wall looms behind her."
+        )
+    ]
+
+    motions = [
+        (
+            "Mara slowly turns toward the wall. Dust trembles with "
+            "each knock as the camera pushes closer."
+        ),
+        (
+            "Her fingers press against the plaster. Her eyes widen "
+            "and her breathing becomes shallow."
+        ),
+        (
+            "The crack crawls downward. Mara takes two cautious "
+            "steps backward as the camera tracks her."
+        ),
+        (
+            "The handle moves slightly. Mara's reflection appears "
+            "to move a fraction later than she does."
+        ),
+        (
+            "A handheld camera follows Mara running. She pulls open "
+            "the door and stops in shock."
+        ),
+        (
+            "The phone vibrates in Mara's shaking hand. The camera "
+            "slowly pulls back as she turns toward the wall."
+        )
+    ]
+
+    scenes = []
+
+    for i in range(6):
+        scenes.append({
+            "narration": narrations[i],
+            "visual_description": visuals[i],
+            "motion_description": motions[i],
+            "mood": "Psychological horror and suspense"
+        })
+
+    story = {
+        "title": "The Room Behind the Wall",
+        "description": (
+            "A woman hears a voice coming from a room that should "
+            "not exist. An original Midnight Files horror story."
+        ),
+        "tags": [
+            "horror",
+            "scary story",
+            "ghost story",
+            "shorts"
+        ],
+        "character_description": (
+            "Mara, 27, shoulder-length dark brown hair, pale tired face, "
+            "faded grey sweater and black trousers. Keep her face and "
+            "clothing identical in every scene."
+        ),
+        "visual_style": (
+            "Photorealistic live-action psychological horror, cinematic "
+            "35mm film look, cold blue moonlight, charcoal shadows, "
+            "subtle film grain and consistent apartment interiors."
+        ),
+        "scenes": scenes
+    }
+
+    for scene in scenes:
+        scene["narration"] = clean(scene["narration"])
+        scene["visual_description"] = clean(
+            scene["visual_description"]
+        )
+        scene["motion_description"] = clean(
+            scene["motion_description"]
+        )
+
+    story["narration"] = " ".join(narrations)
+
+    word_count = len(story["narration"].split())
+
+    print("Fallback story:", story["title"])
+    print("Narration words:", word_count)
+
+    if not 100 <= word_count <= 160:
+        raise RuntimeError(
+            f"Fallback story has {word_count} words."
+        )
+
+    return story
+
+
+# ==========================================
 # GEMINI - HORROR SCREENPLAY
 # ==========================================
 
 def generate_story():
-    api_key = os.environ["GEMINI_API_KEY"]
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+
+    if not api_key:
+        print("Gemini API key missing.")
+        return fallback_story()
 
     prompt = """
 Create one original cinematic horror short film.
@@ -194,21 +374,29 @@ Do not add Markdown or explanations.
 
     print("Generating screenplay with:", GEMINI_MODEL)
 
-    response = request_with_retry(
-        "POST",
-        url,
-        params={"key": api_key},
-        json={
-            "contents": [{
-                "parts": [{"text": prompt}]
-            }],
-            "generationConfig": {
-                "responseMimeType": "application/json",
-                "temperature": 0.8,
-                "maxOutputTokens": 8192
+    try:
+        response = request_with_retry(
+            "POST",
+            url,
+            params={"key": api_key},
+            json={
+                "contents": [{
+                    "parts": [{"text": prompt}]
+                }],
+                "generationConfig": {
+                    "responseMimeType": "application/json",
+                    "temperature": 0.8,
+                    "maxOutputTokens": 8192
+                }
             }
-        }
-    )
+        )
+
+    except RuntimeError as error:
+        if "GEMINI_DAILY_QUOTA" in str(error):
+            print("Gemini daily quota exhausted.")
+            return fallback_story()
+
+        raise
 
     data = response.json()
     candidates = data.get("candidates", [])
@@ -236,6 +424,7 @@ Do not add Markdown or explanations.
 
     try:
         story = json.loads(raw)
+
     except json.JSONDecodeError as error:
         print(raw[:3000])
         raise RuntimeError(f"Invalid Gemini JSON: {error}")
@@ -261,10 +450,14 @@ Do not add Markdown or explanations.
 
     story["title"] = clean(story.get("title")) or "Midnight Files"
     story["description"] = clean(story.get("description"))
+
     story["character_description"] = clean(
         story.get("character_description")
     )
-    story["visual_style"] = clean(story.get("visual_style"))
+
+    story["visual_style"] = clean(
+        story.get("visual_style")
+    )
 
     story["tags"] = story.get(
         "tags", ["horror", "scary story", "shorts"]
@@ -434,6 +627,7 @@ Photorealistic movie footage.
         f"\nGenerating REAL Wan 2.2 video "
         f"{index + 1}/6..."
     )
+
     print("Uploading image with handle_file...")
     print("Requested duration:", WAN_DURATION, "seconds")
     print("Inference steps:", WAN_STEPS)
@@ -617,7 +811,7 @@ def create_subtitles(boundaries, audio_duration, path, narration=""):
 
 
 # ==========================================
-# RENDER REAL VIDEO + NARRATION + SUBTITLES
+# RENDER VIDEO + NARRATION + SUBTITLES
 # ==========================================
 
 def render_scene(
@@ -897,7 +1091,6 @@ def upload_to_youtube(video_path, story):
 
 def main():
     required = [
-        "GEMINI_API_KEY",
         "CLOUDFLARE_ACCOUNT_ID",
         "CLOUDFLARE_API_TOKEN",
         "HF_TOKEN",
