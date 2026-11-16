@@ -18,8 +18,9 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Gradio client
-        run: pip install --upgrade gradio_client
+      - name: Install latest clients
+        run: |
+          python -m pip install --upgrade gradio_client huggingface_hub
 
       - name: Test Hugging Face and Wan Space
         env:
@@ -41,12 +42,12 @@ jobs:
 
           client = Client(
               "zerogpu-aoti/wan2-2-fp8da-aoti-faster",
-              hf_token=token,
+              token=token,
               verbose=False
           )
 
           print("Wan 2.2 connection: SUCCESS")
           client.view_api()
           print("API inspection: SUCCESS")
-          print("No video generated. GPU quota untouched.")
+          print("No video generated.")
           PY
