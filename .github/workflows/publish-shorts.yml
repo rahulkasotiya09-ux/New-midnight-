@@ -1,95 +1,61 @@
 
-name: Midnight Files Scheduled Shorts
+name: GTA 5 Shorts Automation
 
 on:
-  schedule:
-    # 09:00 India time (03:30 UTC), once daily
-    - cron: "30 3 * * *"
   workflow_dispatch:
+  schedule:
+    - cron: "30 3 * * *"
 
 permissions:
   contents: write
 
 concurrency:
-  group: midnight-files-publisher
+  group: gta5-shorts-upload
   cancel-in-progress: false
 
 jobs:
-  publish:
+  upload-short:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
     steps:
-      - name: Checkout repository
+      - name: Check out repository
         uses: actions/checkout@v4
         with:
-          ref: main
+          persist-credentials: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install FFmpeg
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-
-      - name: Install Python packages
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install requests google-auth google-api-python-client
 
-      - name: Get YouTube credentials
+      - name: Upload one GTA 5 Short
         env:
-          WORKER_URL: ${{ secrets.MIDNIGHT_WORKER_URL }}
-          SCHEDULER_SECRET: ${{ secrets.MIDNIGHT_SCHEDULER_SECRET }}
-        run: |
-          CONFIG=$(curl -fsS \
-            -H "Authorization: Bearer $SCHEDULER_SECRET" \
-            "${WORKER_URL%/}/internal/config")
-
-          YT_REFRESH_TOKEN=$(echo "$CONFIG" | jq -r '.youtube_refresh_token')
-          YT_CLIENT_ID=$(echo "$CONFIG" | jq -r '.youtube_client_id')
-          YT_CLIENT_SECRET=$(echo "$CONFIG" | jq -r '.youtube_client_secret')
-
-          if [ -z "$YT_REFRESH_TOKEN" ] || [ "$YT_REFRESH_TOKEN" = "null" ]; then
-            echo "YouTube refresh token is missing."
-            exit 1
-          fi
-
-          echo "::add-mask::$YT_REFRESH_TOKEN"
-          echo "::add-mask::$YT_CLIENT_ID"
-          echo "::add-mask::$YT_CLIENT_SECRET"
-
-          {
-            echo "YOUTUBE_REFRESH_TOKEN=$YT_REFRESH_TOKEN"
-            echo "YOUTUBE_CLIENT_ID=$YT_CLIENT_ID"
-            echo "YOUTUBE_CLIENT_SECRET=$YT_CLIENT_SECRET"
-          } >> "$GITHUB_ENV"
-
-      - name: Generate and publish Short
-        env:
+          MIDNIGHT_WORKER_URL: ${{ secrets.MIDNIGHT_WORKER_URL }}
+          MIDNIGHT_SCHEDULER_SECRET: ${{ secrets.MIDNIGHT_SCHEDULER_SECRET }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          DRIVE_FOLDER_ID: "1s-AiCiDAd8yjj3OlMKAQO_vQfFfWIcnR"
+          YOUTUBE_PRIVACY_STATUS: "private"
+        run: python bot.py
+
+      - name: Save upload history
+        if: success()
         run: |
-          python bot.py
-
-      - name: Save resumable scene cache
-        if: always()
-        run: |
-          mkdir -p midnight_cache
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add -f midnight_cache
-
-          if git diff --cached --quiet; then
-            echo "No cache changes to save."
+          if [ -f uploaded.json ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add uploaded.json
+            if ! git diff --cached --quiet; then
+              git commit -m "Save GTA 5 Shorts upload history"
+              git push
+            else
+              echo "No upload history changes to save."
+            fi
           else
-            git commit -m "Save Midnight Files generation progress"
-            git push origin HEAD:main
+            echo "No uploaded.json was created; nothing to save."
           fi
