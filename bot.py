@@ -118,16 +118,26 @@ def download_drive_video(drive, file_id, destination):
 
 
 def generate_metadata(video_name):
-    fallback_title = Path(video_name).stem.replace("_", " ").replace("-", " ").strip()
-    fallback_title = (fallback_title or "Funny GTA 5 Moment")[:95]
-    fallback = {
-        "title": f"{fallback_title} 😂 #shorts",
+    title = Path(video_name).stem
+
+    title = re.sub(r"\b(?:19|20)\d{6}\b", "", title)
+    title = re.sub(r"\[[A-Za-z0-9_-]{11}\]", "", title)
+    title = re.sub(r"\bBeamNG\s*\.?\s*drive\b", "", title, flags=re.IGNORECASE)
+    title = re.sub(r"#shorts", "", title, flags=re.IGNORECASE)
+
+    title = re.sub(r"[_\-]+", " ", title)
+    title = re.sub(r"[()\[\]{}]", "", title)
+    title = re.sub(r"\s+", " ", title).strip(" -_")
+
+    title = (title or "Funny Gaming Moment")[:95]
+
+    return {
+        "title": title,
         "description": (
-            "A funny GTA 5 gaming moment! 😂\n"
-            "Subscribe for more GTA 5 Shorts.\n\n"
-            "#GTA5 #GTAV #Gaming #Shorts"
+            "Enjoy this amazing gaming moment!\n\n"
+            "#BeamNG #Gaming #Shorts"
         ),
-        "tags": ["GTA 5", "GTA V", "gaming", "funny moments", "shorts"],
+        "tags": ["BeamNG", "BeamNG gameplay", "gaming", "funny moments", "shorts"],
     }
 
     if not GEMINI_API_KEY:
