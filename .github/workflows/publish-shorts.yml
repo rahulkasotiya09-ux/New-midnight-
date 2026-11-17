@@ -40,7 +40,7 @@ jobs:
           MIDNIGHT_SCHEDULER_SECRET: ${{ secrets.MIDNIGHT_SCHEDULER_SECRET }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           DRIVE_FOLDER_ID: "1s-AiCiDAd8yjj3OlMKAQO_vQfFfWIcnR"
-          YOUTUBE_PRIVACY_STATUS: "private"
+          YOUTUBE_PRIVACY_STATUS: "public"
         run: python bot.py
 
       - name: Save upload history
