@@ -122,6 +122,7 @@ def save_history(history):
     )
 
 
+# PAGINATION: SEARCH ALL DRIVE PAGES, NOT JUST FIRST 100
 def choose_next_video(drive, uploaded_ids):
 
     query = (
@@ -129,22 +130,30 @@ def choose_next_video(drive, uploaded_ids):
         "and mimeType contains 'video/'"
     )
 
-    result = drive.files().list(
-        q=query,
-        pageSize=100,
-        orderBy="createdTime asc",
-        fields="nextPageToken,files(id,name,mimeType,size,createdTime)",
-        supportsAllDrives=True,
-        includeItemsFromAllDrives=True,
-    ).execute()
+    page_token = None
 
-    videos = result.get("files", [])
+    while True:
 
-    for video in videos:
-        if video["id"] not in uploaded_ids:
-            return video
+        result = drive.files().list(
+            q=query,
+            pageSize=100,
+            orderBy="createdTime asc",
+            pageToken=page_token,
+            fields="nextPageToken,files(id,name,mimeType,size,createdTime)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        ).execute()
 
-    return None
+        videos = result.get("files", [])
+
+        for video in videos:
+            if video["id"] not in uploaded_ids:
+                return video
+
+        page_token = result.get("nextPageToken")
+
+        if not page_token:
+            return None
 
 
 def download_drive_video(drive, file_id, destination):
@@ -167,6 +176,7 @@ def download_drive_video(drive, file_id, destination):
             _, done = downloader.next_chunk()
 
 
+# YOUTUBE SHORTS METADATA WITH 10 HASHTAGS
 def generate_metadata(video_name):
 
     title = Path(video_name).stem
