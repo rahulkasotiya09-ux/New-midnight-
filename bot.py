@@ -9,9 +9,10 @@ from pathlib import Path
 import requests
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
-# NEW GOOGLE DRIVE FOLDER
+
+# GOOGLE DRIVE FOLDER
 DRIVE_FOLDER_ID = os.getenv(
     "DRIVE_FOLDER_ID",
     "13Xn1e6T1B4GVEoQ5Sx-oZUUCIKKZF9Ii"
@@ -19,23 +20,21 @@ DRIVE_FOLDER_ID = os.getenv(
 
 WORKER_URL = os.getenv("MIDNIGHT_WORKER_URL", "").rstrip("/")
 SCHEDULER_SECRET = os.getenv("MIDNIGHT_SCHEDULER_SECRET", "")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-PRIVACY_STATUS = os.getenv("YOUTUBE_PRIVACY_STATUS", "private")
+PRIVACY_STATUS = os.getenv("YOUTUBE_PRIVACY_STATUS", "public")
 
 HISTORY_FILE = Path("uploaded.json")
 
 SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
     "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube.readonly",
 ]
 
 
 def get_google_config():
-    """Get OAuth credentials from the secured Cloudflare Worker."""
-
     if not WORKER_URL or not SCHEDULER_SECRET:
         raise RuntimeError(
-            "Missing MIDNIGHT_WORKER_URL or MIDNIGHT_SCHEDULER_SECRET GitHub secret."
+            "Missing MIDNIGHT_WORKER_URL or MIDNIGHT_SCHEDULER_SECRET."
         )
 
     response = requests.get(
@@ -58,14 +57,12 @@ def get_google_config():
     if missing:
         raise RuntimeError(
             "Worker config is missing: " + ", ".join(missing)
-            + ". Reconnect Google from the Worker homepage."
         )
 
     return config
 
 
 def make_google_services(config):
-
     credentials = Credentials(
         token=None,
         refresh_token=config["youtube_refresh_token"],
@@ -79,28 +76,25 @@ def make_google_services(config):
         "drive",
         "v3",
         credentials=credentials,
-        cache_discovery=False
+        cache_discovery=False,
     )
 
     youtube = build(
         "youtube",
         "v3",
         credentials=credentials,
-        cache_discovery=False
+        cache_discovery=False,
     )
 
     return drive, youtube
 
 
 def load_history():
-
     if not HISTORY_FILE.exists():
         return {"uploaded_drive_ids": []}
 
     try:
-        data = json.loads(
-            HISTORY_FILE.read_text(encoding="utf-8")
-        )
+        data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
 
         if (
             isinstance(data, dict)
@@ -115,16 +109,14 @@ def load_history():
 
 
 def save_history(history):
-
     HISTORY_FILE.write_text(
         json.dumps(history, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
 
 
-# PAGINATION: SEARCH ALL DRIVE PAGES, NOT JUST FIRST 100
+# FIND THE NEXT UNUPLOADED VIDEO ACROSS ALL DRIVE PAGES
 def choose_next_video(drive, uploaded_ids):
-
     query = (
         f"'{DRIVE_FOLDER_ID}' in parents and trashed = false "
         "and mimeType contains 'video/'"
@@ -133,7 +125,6 @@ def choose_next_video(drive, uploaded_ids):
     page_token = None
 
     while True:
-
         result = drive.files().list(
             q=query,
             pageSize=100,
@@ -144,9 +135,7 @@ def choose_next_video(drive, uploaded_ids):
             includeItemsFromAllDrives=True,
         ).execute()
 
-        videos = result.get("files", [])
-
-        for video in videos:
+        for video in result.get("files", []):
             if video["id"] not in uploaded_ids:
                 return video
 
@@ -157,18 +146,13 @@ def choose_next_video(drive, uploaded_ids):
 
 
 def download_drive_video(drive, file_id, destination):
-
     request = drive.files().get_media(
         fileId=file_id,
-        supportsAllDrives=True
+        supportsAllDrives=True,
     )
 
     with open(destination, "wb") as output:
-
-        downloader = __import__(
-            "googleapiclient.http",
-            fromlist=["MediaIoBaseDownload"]
-        ).MediaIoBaseDownload(output, request)
+        downloader = MediaIoBaseDownload(output, request)
 
         done = False
 
@@ -176,60 +160,114 @@ def download_drive_video(drive, file_id, destination):
             _, done = downloader.next_chunk()
 
 
-# YOUTUBE SHORTS METADATA WITH 10 HASHTAGS
-def generate_metadata(video_name):
+# EXTRACT THE ORIGINAL YOUTUBE VIDEO ID FROM THE DRIVE FILENAME
+def extract_youtube_id(video_name):
+    stem = Path(video_name).stem
 
+    # Example: Original Title [IcesEhvJwSw].mp4
+    match = re.search(r"\[([A-Za-z0-9_-]{11})\]", stem)
+
+    if match:
+        return match.group(1)
+
+    # Example: IcesEhvJwSw.mp4
+    if re.fullmatch(r"[A-Za-z0-9_-]{11}", stem):
+        return stem
+
+    return None
+
+
+# RETRIEVE THE ORIGINAL TITLE FROM YOUTUBE
+def get_original_youtube_title(youtube, video_name):
+    video_id = extract_youtube_id(video_name)
+
+    if not video_id:
+        print("No YouTube video ID found in filename.")
+        return None
+
+    print(f"Looking up original YouTube title for: {video_id}")
+
+    try:
+        result = youtube.videos().list(
+            part="snippet",
+            id=video_id,
+        ).execute()
+
+        items = result.get("items", [])
+
+        if items:
+            original_title = items[0]["snippet"]["title"]
+
+            print(f"Original YouTube title found: {original_title}")
+
+            return original_title
+
+        print("Original video title was not returned by YouTube.")
+
+    except Exception as error:
+        print(f"Could not retrieve original title: {error}")
+
+    return None
+
+
+# FALLBACK TITLE IF ORIGINAL TITLE CANNOT BE RETRIEVED
+def fallback_title(video_name):
     title = Path(video_name).stem
 
-    title = re.sub(r"\b(?:19|20)\d{6}\b", "", title)
+    # Never use a raw 11-character video ID as the title.
+    if re.fullmatch(r"[A-Za-z0-9_-]{11}", title):
+        return "Epic Car Crash Compilation"
+
+    # Remove a trailing [YouTube ID], if present.
     title = re.sub(r"\[[A-Za-z0-9_-]{11}\]", "", title)
 
-    title = re.sub(
-        r"\bBeamNG\s*\.?\s*drive\b",
-        "",
-        title,
-        flags=re.IGNORECASE
-    )
-
-    title = re.sub(
-        r"#shorts",
-        "",
-        title,
-        flags=re.IGNORECASE
-    )
-
-    title = re.sub(r"[_\-]+", " ", title)
-    title = re.sub(r"[()\[\]{}]", "", title)
     title = re.sub(r"\s+", " ", title).strip(" -_")
 
-    title = (title or "Funny Gaming Moment")[:95]
+    title = title or "Epic Car Crash Compilation"
+
+    return title[:100]
+
+
+# ORIGINAL TITLE + 10 CAR CRASH HASHTAGS
+def generate_metadata(youtube, video_name):
+    title = get_original_youtube_title(youtube, video_name)
+
+    if not title:
+        title = fallback_title(video_name)
+        print(f"Using fallback title: {title}")
+
+    title = title[:100]
+
+    description = (
+        "Epic car crashes, crazy collisions and unbelievable "
+        "vehicle destruction! 🚗💥\n\n"
+        "#CarCrash #CarCrashes #CrashGames #CarCrashSimulator "
+        "#EpicCrashes #CrazyCrashes #CarDestruction "
+        "#DrivingSimulator #GamingShorts #Shorts"
+    )
+
+    tags = [
+        "car crash",
+        "car crashes",
+        "crash games",
+        "car crash simulator",
+        "epic crashes",
+        "crazy crashes",
+        "car destruction",
+        "driving simulator",
+        "gaming shorts",
+        "shorts",
+    ]
 
     return {
         "title": title,
-
-        "description": (
-            "Epic car crashes, crazy collisions and unbelievable vehicle destruction! 🚗💥\n\n"
-            "#CarCrash #CarCrashes #CrashGames #CarCrashSimulator #EpicCrashes "
-            "#CrazyCrashes #CarDestruction #DrivingSimulator #GamingShorts #Shorts"
-        ),
-
-        "tags": [
-            "car crash",
-            "car crashes",
-            "crash games",
-            "car crash simulator",
-            "epic crashes",
-            "crazy crashes",
-            "car destruction",
-            "driving simulator",
-            "gaming shorts",
-            "shorts",
-        ],
+        "description": description,
+        "tags": tags,
     }
 
 
+# UPLOAD TO YOUTUBE
 def upload_to_youtube(youtube, video_path, metadata):
-
     body = {
         "snippet": {
             "title": metadata["title"],
@@ -237,7 +275,6 @@ def upload_to_youtube(youtube, video_path, metadata):
             "tags": metadata["tags"],
             "categoryId": "20",
         },
-
         "status": {
             "privacyStatus": PRIVACY_STATUS,
             "selfDeclaredMadeForKids": False,
@@ -260,7 +297,6 @@ def upload_to_youtube(youtube, video_path, metadata):
     response = None
 
     while response is None:
-
         status, response = request.next_chunk()
 
         if status:
@@ -272,80 +308,66 @@ def upload_to_youtube(youtube, video_path, metadata):
 
 
 def main():
+    print("Starting Car Crash Shorts Automation...")
+    print(f"Using Google Drive folder: {DRIVE_FOLDER_ID}")
 
     config = get_google_config()
 
     drive, youtube = make_google_services(config)
 
     history = load_history()
-
     uploaded_ids = set(history["uploaded_drive_ids"])
 
     video = choose_next_video(drive, uploaded_ids)
 
     if not video:
-        print(
-            "No new video found in the configured Google Drive folder."
-        )
+        print("No new video found in the configured Google Drive folder.")
         return
 
-    print(
-        f"Selected Drive video: {video['name']} ({video['id']})"
-    )
+    print(f"Selected Drive video: {video['name']} ({video['id']})")
 
     suffix = Path(video["name"]).suffix or ".mp4"
 
     with tempfile.TemporaryDirectory() as temp_dir:
+        local_video = str(Path(temp_dir) / f"short{suffix}")
 
-        local_video = str(
-            Path(temp_dir) / f"short{suffix}"
-        )
+        print("Downloading video from Google Drive...")
 
         download_drive_video(
             drive,
             video["id"],
-            local_video
+            local_video,
         )
 
-        metadata = generate_metadata(video["name"])
-
-        print(
-            f"Uploading as: {metadata['title']}"
+        metadata = generate_metadata(
+            youtube,
+            video["name"],
         )
+
+        print(f"Uploading with title: {metadata['title']}")
 
         youtube_id = upload_to_youtube(
             youtube,
             local_video,
-            metadata
+            metadata,
         )
 
     history["uploaded_drive_ids"].append(video["id"])
 
-    history.setdefault(
-        "youtube_ids", []
-    ).append(youtube_id)
+    history.setdefault("youtube_ids", []).append(youtube_id)
 
     save_history(history)
 
-    print(
-        f"SUCCESS: https://www.youtube.com/shorts/{youtube_id}"
-    )
-
-    print(
-        f"Privacy status: {PRIVACY_STATUS}"
-    )
+    print("UPLOAD SUCCESSFUL")
+    print(f"Original title: {metadata['title']}")
+    print(f"Short URL: https://www.youtube.com/shorts/{youtube_id}")
+    print(f"Privacy status: {PRIVACY_STATUS}")
 
 
 if __name__ == "__main__":
-
     try:
         main()
 
     except Exception as error:
-
-        print(
-            f"ERROR: {error}",
-            file=sys.stderr
-        )
-
+        print(f"ERROR: {error}", file=sys.stderr)
         raise
