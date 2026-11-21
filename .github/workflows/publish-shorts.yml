@@ -1,5 +1,5 @@
 
-name: GTA 5 Shorts Automation
+name: Car Crash Shorts Automation
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: gta5-shorts-upload
+  group: car-crash-shorts-upload
   cancel-in-progress: false
 
 jobs:
@@ -36,12 +36,12 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install requests google-auth google-api-python-client
 
-      - name: Upload one GTA 5 Short
+      - name: Upload one Car Crash Short
         env:
           MIDNIGHT_WORKER_URL: ${{ secrets.MIDNIGHT_WORKER_URL }}
           MIDNIGHT_SCHEDULER_SECRET: ${{ secrets.MIDNIGHT_SCHEDULER_SECRET }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          DRIVE_FOLDER_ID: "1s-AiCiDAd8yjj3OlMKAQO_vQfFfWIcnR"
+          DRIVE_FOLDER_ID: "13Xn1e6T1B4GVEoQ5Sx-oZUUCIKKZF9Ii"
           YOUTUBE_PRIVACY_STATUS: "public"
         run: python bot.py
 
@@ -53,7 +53,7 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add uploaded.json
             if ! git diff --cached --quiet; then
-              git commit -m "Save GTA 5 Shorts upload history"
+              git commit -m "Save Car Crash Shorts upload history"
               git push
             else
               echo "No upload history changes to save."
